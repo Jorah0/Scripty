@@ -1,0 +1,39 @@
+{
+  "name": "scripty",
+  "productName": "Scripty",
+  "version": "1.0.0",
+  "description": "Scripty — AI Script Studio. Write, revise and perform scripts with Claude, ChatGPT, Gemini, Ollama and more.",
+  "main": "main.js",
+  "author": "Scripty",
+  "license": "MIT",
+  "scripts": {
+    "start": "set ELECTRON_RUN_AS_NODE=&& electron .",
+    "test": "node --test test/*.test.js",
+    "smoke": "set ELECTRON_RUN_AS_NODE=&& electron . --smoke",
+    "verify": "node --test test/*.test.js && set ELECTRON_RUN_AS_NODE=&& electron . --smoke",
+    "icon": "python build/make_icon.py",
+    "dist": "electron-builder --win nsis portable"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.scripty.studio",
+    "productName": "Scripty",
+    "copyright": "Scripty",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "src/**/*", "assets/**/*", "package.json"],
+    "win": { "icon": "build/icon.ico", "target": ["nsis", "portable"] },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Scripty",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    },
+    "portable": { "artifactName": "Scripty-Portable-${version}.exe" }
+  }
+}
