@@ -62,4 +62,10 @@ if __name__ == "__main__":
     big.resize((512, 512), Image.LANCZOS).save(ROOT / "build" / "icon.png")
     big.resize((256, 256), Image.LANCZOS).save(ROOT / "assets" / "icon.png")
     big.save(ROOT / "build" / "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    big.resize((256, 256), Image.LANCZOS).save(ROOT / "src" / "remote" / "icon.png")
+    # Android launcher icons for the Scripty Remote app
+    for folder, px in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}.items():
+        out = ROOT / "android" / "app" / "src" / "main" / "res" / ("mipmap-" + folder)
+        out.mkdir(parents=True, exist_ok=True)
+        big.resize((px, px), Image.LANCZOS).save(out / "ic_launcher.png")
     print("icons written")

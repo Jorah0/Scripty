@@ -1,7 +1,7 @@
 {
   "name": "scripty",
   "productName": "Scripty",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Scripty — AI Script Studio. Write, revise and perform scripts with Claude, ChatGPT, Gemini, Ollama and more.",
   "main": "main.js",
   "author": "Scripty",
@@ -12,19 +12,38 @@
     "smoke": "set ELECTRON_RUN_AS_NODE=&& electron . --smoke",
     "verify": "node --test test/*.test.js && set ELECTRON_RUN_AS_NODE=&& electron . --smoke",
     "icon": "python build/make_icon.py",
+    "android": "powershell -ExecutionPolicy Bypass -File android/build-apk.ps1",
     "dist": "electron-builder --win nsis portable"
   },
   "devDependencies": {
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^26.18.0"
   },
   "build": {
     "appId": "app.scripty.studio",
     "productName": "Scripty",
     "copyright": "Scripty",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "src/**/*", "assets/**/*", "package.json"],
-    "win": { "icon": "build/icon.ico", "target": ["nsis", "portable"] },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "android/dist", "to": "android", "filter": ["Scripty-Remote.apk", "version.json"] }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -34,6 +53,11 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico"
     },
-    "portable": { "artifactName": "Scripty-Portable-${version}.exe" }
+    "portable": {
+      "artifactName": "Scripty-Portable-${version}.exe"
+    }
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
   }
 }

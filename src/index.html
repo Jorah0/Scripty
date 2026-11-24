@@ -38,6 +38,7 @@
       <button class="rail-btn" data-view="projects" title="Projects (Ctrl+O)"><i data-icon="folder"></i><span>Projects</span></button>
       <button class="rail-btn" data-view="sounds" title="Sound board"><i data-icon="wave"></i><span>Sounds</span></button>
       <button class="rail-btn" data-view="providers" title="AI providers"><i data-icon="cpu"></i><span>AI</span></button>
+      <button class="rail-btn" data-view="remote" title="Remote Link — control Scripty from your phone or another device"><i data-icon="phone"></i><span>Remote</span><b id="remote-dot" class="rail-dot hidden"></b></button>
       <button class="rail-btn" data-view="settings" title="Settings"><i data-icon="sliders"></i><span>Settings</span></button>
       <div class="rail-spacer"></div>
       <button class="rail-btn small" data-action="toggle-theme" title="Toggle light/dark"><i data-icon="moon"></i></button>
@@ -154,6 +155,14 @@
           <div><h1>AI Providers</h1><p class="muted">Connect as many AIs as you like. Use one for quick work, or several together in the Writers' Room. Keys are encrypted with your Windows account and never leave this computer except to call that provider.</p></div>
         </div>
         <div id="provider-grid" class="provider-grid"></div>
+      </section>
+
+      <!-- REMOTE LINK -->
+      <section id="view-remote" class="view page">
+        <div class="page-head">
+          <div><h1>Remote Link</h1><p class="muted">Turn your phone, tablet or another computer into a portable remote for Scripty. Trigger sound effects, drive the teleprompter and table read, generate, run Assist, and switch projects.</p></div>
+        </div>
+        <div id="remote-body"></div>
       </section>
 
       <!-- SETTINGS -->

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Scripty">
+  <title>Scripty Remote</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="stylesheet" href="/remote.css">
+</head>
+<body>
+  <!-- Pairing -->
+  <section id="pair" class="pair hidden">
+    <img src="/icon.png" alt="" class="pair-logo">
+    <h1>Scripty Remote</h1>
+    <p class="muted">Link this device to Scripty on your computer.<br>On the desktop open <b>Remote</b> in the left bar and turn on Remote Link.</p>
+    <p id="pair-msg" class="msg"></p>
+    <label class="lbl" for="pair-code">6-digit code</label>
+    <input id="pair-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456">
+    <label class="lbl" for="pair-name">Name this device</label>
+    <input id="pair-name" maxlength="40">
+    <button id="pair-go" class="big primary">Link device</button>
+    <a id="get-app" class="big get-app hidden" href="/scripty-remote.apk" download>Get the Android app</a>
+  </section>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header>
+      <img src="/icon.png" alt="" class="logo">
+      <div class="h-text"><b id="h-title">Scripty</b><span id="h-sub"></span></div>
+      <span id="conn" class="conn" title="Connection"></span>
+    </header>
+    <main id="content"></main>
+    <nav id="tabs">
+      <button data-tab="control">◉<span>Control</span></button>
+      <button data-tab="sounds">♫<span>Sounds</span></button>
+      <button data-tab="script">☰<span>Script</span></button>
+      <button data-tab="assist">✦<span>Assist</span></button>
+      <button data-tab="projects">▤<span>Projects</span></button>
+    </nav>
+  </div>
+
+  <!-- Phone teleprompter -->
+  <div id="prompter" class="prompter hidden">
+    <div id="pr-scroll" class="pr-scroll"><div id="pr-text" class="pr-text"></div></div>
+    <div class="pr-bar">
+      <button id="pr-play">Start</button><button id="pr-slow">−</button><span id="pr-speed">40</span><button id="pr-fast">+</button><button id="pr-close">Close</button>
+    </div>
+  </div>
+
+  <!-- App self-update progress (Android app only) -->
+  <div id="upd" class="upd hidden"><div class="upd-card">
+    <b id="upd-title">Updating Scripty Remote</b><p id="upd-msg" class="muted"></p>
+    <div class="meter"><i id="upd-bar" style="width:0%"></i></div>
+    <button id="upd-close" class="btn hidden">OK</button>
+  </div></div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/scriptkit.js"></script>
+  <script src="/sfx.js"></script>
+  <script src="/remote.js"></script>
+</body>
+</html>

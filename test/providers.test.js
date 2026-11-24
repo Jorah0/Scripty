@@ -20,6 +20,11 @@ test('anthropic request uses native messages API with system split out', () => {
   assert.deepEqual(r.body.messages, msgs);
 });
 
+test('anthropic temperature is clamped to its 0..1 range', () => {
+  const r = P.buildRequest('anthropic', { apiKey: 'k', model: 'm' }, msgs, { temperature: 1.4 });
+  assert.equal(r.body.temperature, 1);
+});
+
 test('openai-compatible request puts system first and bearer auth; ollama needs no key', () => {
   const r = P.buildRequest('openai', { apiKey: 'k', model: 'm' }, msgs, { system: 'S' });
   assert.equal(r.url, 'https://api.openai.com/v1/chat/completions');

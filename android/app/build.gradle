@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The phone app shares the desktop's version (package.json), so the desktop can tell a phone it is out of date.
+def desktopVersion = new groovy.json.JsonSlurper().parse(file('../../package.json')).version
+def (vMajor, vMinor, vPatch) = desktopVersion.tokenize('.').collect { it.toInteger() }
+
+android {
+    namespace 'app.scripty.remote'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.scripty.remote'
+        minSdk 24
+        targetSdk 34
+        versionCode vMajor * 10000 + vMinor * 100 + vPatch
+        versionName desktopVersion
+    }
+
+    // Updates only install over an app signed with the SAME key, so every build must use this one keystore.
+    // It lives in android/keystore/ (git-ignored); losing it means phones must uninstall before the next version.
+    def ksProps = new Properties()
+    def ksFile = rootProject.file('keystore/keystore.properties')
+    if (ksFile.exists()) ksFile.withInputStream { ksProps.load(it) }
+    signingConfigs {
+        release {
+            if (ksFile.exists()) {
+                storeFile rootProject.file('keystore/' + ksProps['storeFile'])
+                storePassword ksProps['storePassword']
+                keyAlias ksProps['keyAlias']
+                keyPassword ksProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (!ksFile.exists()) throw new GradleException('Missing android/keystore/keystore.properties (the app signing key).')
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

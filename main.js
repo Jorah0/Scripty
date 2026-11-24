@@ -5,6 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const P = require('./src/core/providers.js');
+const { createRemote } = require('./src/core/remote.js');
+const QRCode = require('qrcode');
 
 const SMOKE = process.argv.includes('--smoke');
 const SHOT_DIR = (process.argv.find(a => a.startsWith('--shot=')) || '').slice(7);
@@ -28,11 +30,12 @@ function writeJSON(p, v) {
 
 const DEFAULT_SETTINGS = {
   theme: 'dark', accent: 'violet', editorFont: 'sans', editorSize: 16, temperature: 0.8, maxTokens: 8192,
-  autosave: true, sfxVolume: 0.8, defaultType: 'youtube', readRate: 1, readSfx: true,
+  sfxVolume: 0.8, defaultType: 'youtube', readRate: 1, readSfx: true,
 };
 function loadConfig() {
   const c = readJSON(CONFIG(), {});
-  return { settings: { ...DEFAULT_SETTINGS, ...(c.settings || {}) }, providers: c.providers || {}, keys: c.keys || {} };
+  return { settings: { ...DEFAULT_SETTINGS, ...(c.settings || {}) }, providers: c.providers || {}, keys: c.keys || {},
+    remote: { enabled: false, port: 47830, devices: [], ...(c.remote || {}) } };
 }
 let config;
 const saveConfig = () => writeJSON(CONFIG(), config);
@@ -68,6 +71,8 @@ function publicProviders() {
 }
 
 // ---------- AI streaming ----------
+// A stored key must only travel to that vendor's own URL; only local/custom servers take a renderer-supplied URL.
+const urlOverridable = id => !!(P.PROVIDERS[id] && (P.PROVIDERS[id].local || id === 'custom'));
 const running = new Map();
 function friendlyError(id, err, status, bodyText) {
   const p = P.PROVIDERS[id] || { label: id };
@@ -83,9 +88,9 @@ function friendlyError(id, err, status, bodyText) {
 
 async function streamAI(sender, req) {
   const { reqId, provider, model, baseUrl, system, messages, temperature, maxTokens } = req;
-  const cfg = providerCfg(provider, { ...(model ? { model } : {}), ...(baseUrl ? { baseUrl } : {}) });
   const p = P.PROVIDERS[provider];
   if (!p) throw new Error('Unknown provider ' + provider);
+  const cfg = providerCfg(provider, { ...(model ? { model } : {}), ...(baseUrl && urlOverridable(provider) ? { baseUrl } : {}) });
   if (p.needsKey && !cfg.apiKey) throw new Error(p.label + ' has no API key yet. Add one on the Providers page.');
   const r = P.buildRequest(provider, cfg, messages, { system, temperature, maxTokens });
   const ctrl = new AbortController();
@@ -137,13 +142,22 @@ function createWindow() {
   const theme = config.settings.theme;
   nativeTheme.themeSource = theme;
   win = new BrowserWindow({
-    width: 1480, height: 920, minWidth: 1100, minHeight: 680, show: false, title: 'Scripty',
+    // Shown immediately (the dark backgroundColor avoids a white flash). Waiting for 'ready-to-show' left the app
+    // running with an invisible window on some launches, and every later click then did nothing.
+    width: 1480, height: 920, minWidth: 1100, minHeight: 680, show: true, title: 'Scripty',
     backgroundColor: barFor(theme).color, icon: path.join(__dirname, 'assets', 'icon.png'),
     titleBarStyle: 'hidden', titleBarOverlay: barFor(theme),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true },
   });
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
-  win.once('ready-to-show', () => win.show());
+  let closing = false;
+  win.on('close', (e) => {
+    if (closing || SMOKE) return;
+    e.preventDefault(); closing = true;
+    const done = () => { if (!win.isDestroyed()) win.destroy(); };
+    setTimeout(done, 2500);
+    win.webContents.executeJavaScript('window.__scripty && window.__scripty.flush()').catch(() => {}).finally(done);
+  });
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('context-menu', (e, params) => {
@@ -162,13 +176,20 @@ function runSmoke() {
   win.webContents.on('console-message', (e, level, message, line, src) => { if (level >= 3) errors.push(message + ' @' + src + ':' + line); });
   win.webContents.on('preload-error', (e, p, err) => errors.push('preload: ' + err));
   win.webContents.on('render-process-gone', (e, d) => errors.push('renderer gone: ' + d.reason));
+  win.setAlwaysOnTop(true); // covered windows stop painting, which would make screenshots show stale frames
   win.webContents.once('did-finish-load', async () => {
     await new Promise(r => setTimeout(r, 1500));
     let result = null;
     try { result = await win.webContents.executeJavaScript('window.__scripty.selfTest()'); } catch (e) { errors.push('selfTest threw: ' + e.message); }
+    // The window must be visible without relying on 'ready-to-show', and a second launch must bring a hidden one back.
+    if (!win.isVisible()) errors.push('window: not visible after load');
+    win.hide();
+    app.emit('second-instance', {}, [], process.cwd());
+    if (!win.isVisible()) errors.push('window: second launch did not bring the hidden window back');
+    if (SHOT_DIR) fs.mkdirSync(SHOT_DIR, { recursive: true });
+    await smokeRemote(errors);
     if (SHOT_DIR) {
-      fs.mkdirSync(SHOT_DIR, { recursive: true });
-      for (const view of ['studio', 'perform', 'writers', 'providers', 'sounds', 'projects', 'settings', 'light']) {
+      for (const view of ['studio', 'perform', 'writers', 'providers', 'sounds', 'projects', 'settings', 'remote', 'models', 'light']) {
         try { await win.webContents.executeJavaScript('window.__scripty.show(' + JSON.stringify(view) + ')'); } catch (e) { errors.push('show ' + view + ': ' + e.message); }
         await new Promise(r => setTimeout(r, 500));
         fs.writeFileSync(path.join(SHOT_DIR, view + '.png'), (await win.webContents.capturePage()).toPNG());
@@ -177,6 +198,82 @@ function runSmoke() {
     console.log('SMOKE ' + JSON.stringify({ result, errors }));
     app.exit(result === true && !errors.length ? 0 : 1);
   });
+}
+
+/** End-to-end Remote Link check: real server, real phone page linked via a QR URL, real command round-trip. */
+async function smokeRemote(errors) {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  let phone;
+  try {
+    await remote.start(0);
+    const st = remote.status(), base = 'http://127.0.0.1:' + st.port + '/';
+    await win.webContents.executeJavaScript('refreshRemoteStatus()');
+    phone = new BrowserWindow({ width: 390, height: 844, x: 40, y: 40, title: 'Scripty Remote (smoke)', alwaysOnTop: true, webPreferences: { sandbox: true } });
+    phone.webContents.on('console-message', (e, level, message) => { if (level >= 3) errors.push('phone: ' + message); });
+    await phone.loadURL(base + '?pair=' + encodeURIComponent(st.pairToken));
+    await wait(1500);
+    const linked = await phone.webContents.executeJavaScript('!!localStorage.getItem("scripty.token") && !document.getElementById("app").classList.contains("hidden")');
+    if (!linked) errors.push('remote: phone did not link from the QR URL');
+    const title = await phone.webContents.executeJavaScript('document.getElementById("h-title").textContent');
+    if (!/Welcome/.test(title)) errors.push('remote: desktop state not mirrored to phone (title=' + title + ')');
+    await phone.webContents.executeJavaScript('document.getElementById("b-mode").click()');
+    await wait(900);
+    const mode = await win.webContents.executeJavaScript('document.getElementById("perform").classList.contains("hidden") ? "edit" : "perform"');
+    if (mode !== 'perform') errors.push('remote: phone command did not reach the desktop');
+    const btn = await phone.webContents.executeJavaScript('document.getElementById("b-mode").textContent');
+    if (!/Write/.test(btn)) errors.push('remote: phone did not receive the updated state (' + btn + ')');
+    // App self-update push: desktop -> only this phone -> Android bridge (stubbed here) gets the verified version.
+    const v = remote.status().apkVersion;
+    if (v) {
+      await phone.webContents.executeJavaScript('window.__upd = []; window.ScriptyApp = { versionCode: () => 1, update: (s, c) => window.__upd.push([s, c]) }; true');
+      const dev = remote.status().devices[remote.status().devices.length - 1];
+      if (remote.pushUpdate(dev.id) !== 1) errors.push('remote update: push did not reach the connected phone');
+      await wait(700);
+      const got = JSON.parse(await phone.webContents.executeJavaScript('JSON.stringify(window.__upd)'));
+      if (!(got.length === 1 && got[0][0] === v.sha256 && got[0][1] === v.versionCode)) errors.push('remote update: phone bridge got ' + JSON.stringify(got));
+      if (await phone.webContents.executeJavaScript('document.getElementById("upd").classList.contains("hidden")')) errors.push('remote update: progress overlay not shown');
+      await phone.webContents.executeJavaScript('window.onAppUpdate({ state: "downloading", message: "Downloading the update from your PC…", percent: 62 }); true');
+      const shown = await phone.webContents.executeJavaScript('document.getElementById("upd-msg").textContent + "|" + document.getElementById("upd-bar").style.width');
+      if (shown !== 'Downloading the update from your PC…|62%') errors.push('remote update: progress not rendered (' + shown + ')');
+      await wait(400);
+      if (SHOT_DIR) fs.writeFileSync(path.join(SHOT_DIR, 'phone-update.png'), (await phone.webContents.capturePage()).toPNG());
+      await phone.webContents.executeJavaScript('document.getElementById("upd").classList.add("hidden"); delete window.ScriptyApp; true');
+    } else console.log('SMOKE note: no Android APK built, app-update push not exercised');
+    if (SHOT_DIR) {
+      for (const t of ['control', 'sounds', 'script', 'assist']) {
+        await phone.webContents.executeJavaScript('document.querySelector(\'[data-tab="' + t + '"]\').click()');
+        await wait(400);
+        fs.writeFileSync(path.join(SHOT_DIR, 'phone-' + t + '.png'), (await phone.webContents.capturePage()).toPNG());
+      }
+    }
+    await win.webContents.executeJavaScript('setEditorMode("edit")');
+  } catch (e) { errors.push('remote e2e: ' + e.message); }
+  finally { if (phone && !phone.isDestroyed()) phone.destroy(); }
+}
+
+// ---------- Remote Link (phone / tablet / other PC controls this app) ----------
+let remote = null, remoteError = '';
+function initRemote() {
+  remote = createRemote({
+    staticDir: path.join(__dirname, 'src'),
+    // Android companion app: bundled in resources\android when packaged, android\dist during development
+    apkPath: app.isPackaged ? path.join(process.resourcesPath, 'android', 'Scripty-Remote.apk') : path.join(__dirname, 'android', 'dist', 'Scripty-Remote.apk'),
+    onCommand: (cmd) => { if (win && !win.isDestroyed()) win.webContents.send('remote:command', cmd); },
+    loadDevices: () => config.remote.devices,
+    saveDevices: (d) => { config.remote.devices = d; saveConfig(); },
+  });
+}
+async function startRemote() {
+  remoteError = '';
+  try { await remote.start(config.remote.port); }
+  catch (e) { remoteError = e.code === 'EADDRINUSE' ? 'Port ' + config.remote.port + ' is already in use. Pick another port.' : e.message; }
+}
+async function remoteStatus() {
+  const s = remote.status();
+  // One QR per address (the pair token is single-use, so whichever one gets scanned first wins).
+  const qrs = await Promise.all(s.urls.map(u => QRCode.toDataURL(u + '?pair=' + encodeURIComponent(s.pairToken), { margin: 1, width: 240, color: { dark: '#111827', light: '#ffffff' } })));
+  const apkQrs = s.apk ? await Promise.all(s.urls.map(u => QRCode.toDataURL(u + 'scripty-remote.apk', { margin: 1, width: 200, color: { dark: '#111827', light: '#ffffff' } }))) : [];
+  return { ...s, pairToken: undefined, enabled: config.remote.enabled, configuredPort: config.remote.port, error: remoteError, qrs, apkQrs };
 }
 
 // ---------- IPC ----------
@@ -204,7 +301,7 @@ function registerIPC() {
   });
 
   handle('ai:models', async (e, id, baseUrl) => {
-    const cfg = providerCfg(id, baseUrl ? { baseUrl } : {});
+    const cfg = providerCfg(id, baseUrl && urlOverridable(id) ? { baseUrl } : {});
     const r = P.modelsRequest(id, cfg);
     try {
       const models = P.parseModels(await fetchJSON(r.url, r.headers));
@@ -298,16 +395,45 @@ function registerIPC() {
     if (win && win.setTitleBarOverlay) win.setTitleBarOverlay(barFor(theme));
   });
   handle('data:open', () => shell.openPath(app.getPath('userData')));
+
+  // ---------- Remote Link ----------
+  handle('remote:status', () => remoteStatus());
+  handle('remote:enable', async (e, on) => {
+    config.remote.enabled = !!on; saveConfig();
+    if (on) await startRemote(); else { await remote.stop(); remoteError = ''; }
+    return remoteStatus();
+  });
+  handle('remote:port', async (e, port) => {
+    port = Math.round(Number(port));
+    if (!(port >= 1024 && port <= 65535)) throw new Error('Port must be between 1024 and 65535.');
+    config.remote.port = port; saveConfig();
+    if (config.remote.enabled) { await remote.stop(); await startRemote(); }
+    return remoteStatus();
+  });
+  handle('remote:newCode', () => { remote.newPairing(); return remoteStatus(); });
+  handle('remote:revoke', (e, id) => { remote.revoke(String(id)); return remoteStatus(); });
+  handle('remote:pushUpdate', (e, id) => ({ sent: remote.pushUpdate(String(id)) }));
+  ipcMain.on('remote:state', (e, s) => remote.setState(s));
 }
 
 if (!SMOKE && !app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  // Clicking Scripty again always brings a usable window forward: restores, un-hides, or recreates it.
+  app.on('second-instance', () => {
+    if (!config) return;
+    if (!win || win.isDestroyed()) return createWindow();
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+  });
   app.whenReady().then(() => {
     config = loadConfig();
+    initRemote();
     Menu.setApplicationMenu(null);
     registerIPC();
     createWindow();
+    if (config.remote.enabled && !SMOKE) startRemote();
   });
+  app.on('before-quit', () => remote && remote.stop());
   app.on('window-all-closed', () => app.quit());
 }

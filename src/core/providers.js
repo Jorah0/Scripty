@@ -45,7 +45,7 @@ function buildRequest(id, cfg, messages, opts) {
   if (p.kind === 'anthropic') {
     const body = { model, max_tokens: opts.maxTokens || 8192, messages, stream: true };
     if (opts.system) body.system = opts.system;
-    if (opts.temperature != null) body.temperature = opts.temperature;
+    if (opts.temperature != null) body.temperature = Math.max(0, Math.min(1, opts.temperature)); // Anthropic accepts 0..1 only
     return {
       url: base + '/messages',
       headers: { 'content-type': 'application/json', 'x-api-key': (cfg && cfg.apiKey) || '', 'anthropic-version': '2023-06-01' },

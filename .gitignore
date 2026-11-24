@@ -1,3 +1,11 @@
 node_modules/
 dist/
 *.log
+
+# Android build outputs and local SDK path
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/dist/
+android/keystore/

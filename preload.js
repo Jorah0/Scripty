@@ -26,4 +26,12 @@ contextBridge.exposeInMainWorld('scripty', {
   openExternal: inv('shell:openExternal'),
   setTheme: inv('win:setTheme'),
   openData: inv('data:open'),
+  remoteStatus: inv('remote:status'),
+  remoteEnable: inv('remote:enable'),
+  remotePort: inv('remote:port'),
+  remoteNewCode: inv('remote:newCode'),
+  remoteRevoke: inv('remote:revoke'),
+  remotePushUpdate: inv('remote:pushUpdate'),
+  onRemoteCommand: (cb) => { const h = (e, d) => cb(d); ipcRenderer.on('remote:command', h); return () => ipcRenderer.removeListener('remote:command', h); },
+  sendRemoteState: (s) => ipcRenderer.send('remote:state', s),
 });

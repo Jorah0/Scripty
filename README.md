@@ -18,6 +18,7 @@ A Windows desktop app for writing, revising and performing scripts with AI. Use 
 | **Sound effects** | Any `[SFX: …]` or `[MUSIC: …]` cue becomes a clickable chip in **Perform** mode. 40 built-in sounds are synthesized live (rain, thunder, knocks, footsteps, tapping, crinkling, page turns, whoosh, applause, …). Add your own audio files with keywords, and override the match for any cue. |
 | **Perform** | **Table read** with text-to-speech, a voice and pitch per character, and sound cues played in order. Full-screen **teleprompter** (speed, size, mirror mode). |
 | **Safety net** | Autosave, plus a snapshot before every AI change. One-click undo and a full version history. |
+| **Remote Link** | A portable companion app for a phone, tablet or second PC. Link it by scanning a QR code or typing a 6-digit code, then control Scripty from it: generate or stop, table read, the desktop teleprompter (play, speed, scroll), every sound cue and the sound board (played on the desktop *or* on the device itself), Assist and extras, projects, plus a teleprompter that runs on the device. Install it with "Add to Home Screen". |
 | **Import / export** | Import TXT, MD, Fountain, SRT/VTT, HTML, RTF and Scripty projects. Export PDF, HTML, TXT, Markdown, Fountain, timed SRT subtitles, and project JSON. |
 
 ## Cue syntax
@@ -34,9 +35,26 @@ VISUAL: B-roll of the city at night     ← visual note (not counted as spoken)
 
 ## Install and run
 
-- **Use the app:** run `dist\Scripty Setup 1.0.0.exe` (installer with Start-menu and desktop shortcuts) or `dist\Scripty-Portable-1.0.0.exe` (no install).
+- **Use the app:** run `dist\Scripty Setup 1.1.0.exe` (installer with Start-menu and desktop shortcuts) or `dist\Scripty-Portable-1.1.0.exe` (no install).
 - **Connect an AI:** open the **AI** page (left rail), paste an API key, then press **Models** and **Test**. Keys are encrypted with Windows DPAPI. Keys in environment variables such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` are picked up automatically.
 - **Free and local:** install [Ollama](https://ollama.com), run `ollama pull llama3.2`, and choose Ollama.
+
+## Remote Link (control Scripty from your phone)
+
+1. In Scripty, open **Remote** in the left bar and switch on **Remote Link**. The first time, allow Scripty through Windows Firewall on *Private* networks.
+2. On your phone, scan the QR code, or open the address shown and type the 6-digit code. Codes are single-use and expire after 10 minutes.
+3. Optional: use your browser's **Add to Home Screen** so the remote opens like an app.
+
+**From anywhere:** install [Tailscale](https://tailscale.com) (free) on the PC and the phone, then use the PC's Tailscale address. Don't port-forward the link to the public internet; it uses plain HTTP and is designed for trusted networks.
+
+**Security:** the link is off by default. Device tokens are random 256-bit values, and only their hashes are stored. Pairing locks after repeated wrong codes. Commands are allow-listed. You can unlink any device on the Remote page.
+
+## Android app (Scripty Remote)
+
+- **Install:** on the PC open **Remote**, switch it on, and scan the **Android app** QR code with the phone. You can also copy `dist\Scripty-Remote-1.1.0.apk` to the phone. Allow "install unknown apps" when Android asks.
+- **Link:** open Scripty Remote and type the PC address, or scan the pairing QR with the camera and choose *Open with Scripty Remote*.
+- **Update over the link:** when a newer app is bundled with Scripty, the device shows **Update app** on the Remote page. That pushes the update to that phone only. The phone downloads it from the PC, checks its SHA-256, package name and signature, installs it and reopens itself. The first update asks for one confirmation tap. On Android 12+ later updates need no tap. If Android blocks the automatic reopen, a "tap to open" notification appears.
+- **Build:** `npm run android` (output `android\dist\`), then `npm run dist` to bundle it. The signing key lives in `android\keystore\`, which is git-ignored. **Back it up.** Every future update must be signed with the same key.
 
 ## Develop
 

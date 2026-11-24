@@ -77,6 +77,7 @@ const ICONS = {
   gamepad: '<path d="M6 12h4M8 10v4M15 13h.01M18 11h.01"/><rect x="2" y="6" width="20" height="12" rx="2"/>',
   external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  phone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
   merge: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
 };
 const ic = name => '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
@@ -142,12 +143,16 @@ function newProject(type) {
 function normalizeProject(p) {
   const d = newProject(p && p.brief && p.brief.type);
   const b = (p && p.brief) || {};
+  const SAFE = /^[\w-]{1,64}$/;
+  const safeRun = r => r && SAFE.test(r.id) && Array.isArray(r.lanes) && r.lanes.every(l => l && SAFE.test(l.id) && SAFE.test(String(l.provider || '')))
+    && [r.final, r.activeLane, r.winner, r.applied].every(x => x == null || SAFE.test(x));
   const fixRun = r => r.status === 'running' ? { ...r, status: 'cancelled', lanes: (r.lanes || []).map(l => ['running', 'waiting'].includes(l.status) ? { ...l, status: 'cancelled' } : l) } : r;
   return {
     ...d, ...p,
     brief: { ...d.brief, ...b, length: { ...d.brief.length, ...(b.length || {}) }, include: { ...d.brief.include, ...(b.include || {}) },
       characters: Array.isArray(b.characters) && b.characters.length ? b.characters : d.brief.characters },
-    snapshots: p.snapshots || [], runs: (p.runs || []).map(fixRun), voices: p.voices || {}, sfxOverrides: p.sfxOverrides || {},
+    snapshots: (p.snapshots || []).filter(s => s && SAFE.test(s.id) && typeof s.content === 'string').map(s => ({ ...s, words: Number(s.words) || K.countWords(s.content), t: Number(s.t) || Date.now(), label: String(s.label || 'Snapshot') })),
+    runs: (p.runs || []).filter(safeRun).map(fixRun), voices: p.voices || {}, sfxOverrides: p.sfxOverrides || {},
   };
 }
 function welcomeProject() {
@@ -303,12 +308,62 @@ function opts(list, sel, labels) { return list.map((v, i) => '<option value="' +
 function providerOptions(sel) {
   return Object.values(state.providers).map(p => '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.label) + '</option>').join('');
 }
+/** A model text box with a ▾ button that opens the full, scrollable, searchable model list. */
+function modelCombo(inputHtml, provider) {
+  return '<div class="combo">' + inputHtml + '<button class="combo-btn" data-action="model-menu" data-provider="' + esc(provider) + '" title="Show all models" aria-label="Show all models">▾</button></div>';
+}
+function openModelMenu(btn) {
+  const id = btn.dataset.provider, input = btn.parentElement.querySelector('input');
+  closeMenu();
+  const root = $('#menu-root');
+  root.innerHTML = '<div class="menu model-menu"><input class="input" id="mm-q" placeholder="Search models…" spellcheck="false" autocomplete="off">' +
+    '<div class="mm-list" id="mm-list"></div><div class="mm-foot"><span class="hint" id="mm-count"></span>' +
+    '<button class="icon-btn" id="mm-refresh" title="Fetch the latest list from the provider">' + ic('refresh') + 'Refresh</button></div></div>';
+  const m = root.firstChild, r = btn.parentElement.getBoundingClientRect();
+  m.style.width = Math.max(r.width, 300) + 'px';
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
+  const below = innerHeight - r.bottom;
+  m.style.top = (below < 300 && r.top > below ? Math.max(8, r.top - m.offsetHeight - 6) : r.bottom + 6) + 'px';
+  let status = '';
+  const all = () => [...new Set([state.providers[id].model, ...(state.providers[id].models || [])].filter(Boolean))];
+  const draw = () => {
+    const q = $('#mm-q').value.trim().toLowerCase(), cur = input.value.trim() || state.providers[id].model;
+    const list = all().filter(x => !q || x.toLowerCase().includes(q));
+    $('#mm-list').innerHTML = list.map(x => '<button class="mm-item' + (x === cur ? ' on' : '') + '" data-model="' + esc(x) + '">' + esc(x) +
+        (x === state.providers[id].model ? '<span>default</span>' : '') + '</button>').join('') +
+      (q && !list.includes($('#mm-q').value.trim()) ? '<button class="mm-item custom" data-model="' + esc($('#mm-q').value.trim()) + '">Use “' + esc($('#mm-q').value.trim()) + '”</button>' : '') +
+      (status ? '<div class="hint mm-status">' + status + '</div>' : '');
+    $('#mm-count').textContent = list.length + ' of ' + all().length + ' models';
+    const on = $('#mm-list .on'); if (on && !q) on.scrollIntoView({ block: 'nearest' });
+  };
+  const pick = model => {
+    input.value = model;
+    input.dispatchEvent(new Event('input', { bubbles: true })); // runs the normal save/bind path
+    closeMenu();
+  };
+  const refresh = async () => {
+    const p = state.providers[id];
+    if (!p.ready) { status = esc(p.label) + ' needs an API key before its model list can be loaded.'; return draw(); }
+    status = '<span class="spinner"></span> Loading models from ' + esc(p.label) + '…'; draw();
+    try { p.models = await api.models(id, p.baseUrl || undefined); renderDatalists(); status = ''; }
+    catch (e) { status = esc(cleanErr(e)); }
+    if (document.getElementById('mm-list')) draw();
+  };
+  $('#mm-q').addEventListener('input', draw);
+  $('#mm-q').addEventListener('keydown', e => { if (e.key === 'Enter') { const f = $('#mm-list [data-model]'); if (f) pick(f.dataset.model); } });
+  $('#mm-list').addEventListener('click', e => { const b = e.target.closest('[data-model]'); if (b) pick(b.dataset.model); });
+  $('#mm-refresh').onclick = refresh;
+  draw();
+  $('#mm-q').focus();
+  setTimeout(() => document.addEventListener('mousedown', menuOutside), 0);
+  if (all().length <= 1 || !(state.providers[id].models || []).length) refresh(); // first open: fetch the full list
+}
 function memberRow(path, m, role, removeIdx) {
   const p = state.providers[m.provider];
   const warn = p && !p.ready ? '<div class="member-warn">' + esc(p.label) + ' needs an API key · <a href="#" data-action="goto-providers">set up</a></div>' : '';
   return '<div class="member">' + (role ? '<div class="role">' + esc(role) + '</div>' : '') +
     '<select class="input" data-bind="' + path + '.provider" data-rerender>' + providerOptions(m.provider) + '</select>' +
-    '<input class="input" data-bind="' + path + '.model" value="' + esc(m.model || '') + '" placeholder="' + esc(defModel(m.provider) || 'model') + '" list="dl-' + m.provider + '" spellcheck="false" title="Model (blank = provider default)">' +
+    modelCombo('<input class="input" data-bind="' + path + '.model" value="' + esc(m.model || '') + '" placeholder="' + esc(defModel(m.provider) || 'model') + '" spellcheck="false" title="Model (blank = provider default)">', m.provider) +
     (removeIdx != null && state.settings.engine.room.length > 1 ? '<button class="icon-btn" data-action="room-rm" data-i="' + removeIdx + '" title="Remove writer">' + ic('x') + '</button>' : '<span></span>') + warn + '</div>';
 }
 function engineCard() {
@@ -426,7 +481,7 @@ function updateSelNote() {
   n.innerHTML = sel.trim() ? 'Applies to your <b>selection</b> (' + K.countWords(sel) + ' words).' : 'Applies to the <b>whole script</b>. Select text in the editor to target a passage.';
 }
 function replaceRange(s, e, text, snapLabel) {
-  if (snapLabel) snapshot(snapLabel, true);
+  const snapId = snapLabel ? snapshot(snapLabel, true) : null;
   const ed = editor();
   if (state.editorMode === 'edit') {
     ed.focus();
@@ -434,10 +489,11 @@ function replaceRange(s, e, text, snapLabel) {
     if (!document.execCommand('insertText', false, text)) ed.setRangeText(text, s, e, 'end'); // keeps native undo when possible
   } else ed.value = ed.value.slice(0, s) + text + ed.value.slice(e);
   markDirty(); refreshAnalysis();
+  return snapId;
 }
-function replaceEditor(text, label) { replaceRange(0, editor().value.length, text, label); }
+function replaceEditor(text, label) { return replaceRange(0, editor().value.length, text, label); }
 function insertAtCursor(text) { const ed = editor(); replaceRange(ed.selectionStart, ed.selectionEnd, text); }
-function appendToEditor(text, label) { const v = editor().value; replaceRange(v.length, v.length, (v && !v.endsWith('\n') ? '\n\n' : v ? '\n' : '') + text, label); }
+function appendToEditor(text, label) { const v = editor().value; return replaceRange(v.length, v.length, (v && !v.endsWith('\n') ? '\n\n' : v ? '\n' : '') + text, label); }
 function insertSnippet(text, back) {
   if (state.editorMode !== 'edit') setEditorMode('edit');
   const ed = editor(), s = ed.selectionStart;
@@ -488,15 +544,25 @@ function replaceAll() {
 }
 
 // snapshots
+/** Save a version; returns its id, the id of an identical latest version, or null when the editor is empty. */
 function snapshot(label, auto) {
   const c = editor().value;
-  if (!c.trim()) return;
+  if (!c.trim()) return null;
   const last = state.project.snapshots[0];
-  if (last && last.content === c) return;
-  state.project.snapshots.unshift({ id: uid(), t: Date.now(), label: label || 'Snapshot', content: c, words: K.countWords(c), auto: !!auto });
+  if (last && last.content === c) return last.id;
+  const id = uid();
+  state.project.snapshots.unshift({ id, t: Date.now(), label: label || 'Snapshot', content: c, words: K.countWords(c), auto: !!auto });
   state.project.snapshots = state.project.snapshots.slice(0, 40);
   markDirty();
   if (state.tool === 'history') renderTool();
+  return id;
+}
+/** Undo an AI change: keep the AI version as a snapshot, then put back what was there before (possibly an empty editor). */
+function undoTo(snapId) {
+  if (snapId) return restoreSnapshot(snapId, true);
+  snapshot('Before undo', true);
+  replaceEditor('');
+  toast('Undone', 'ok');
 }
 function restoreSnapshot(id, snapFirst) {
   const s = state.project.snapshots.find(x => x.id === id);
@@ -587,12 +653,12 @@ function voiceFor(speaker) {
   return { voice: pool.length ? pool[i % pool.length] : null, pitch: [1, 0.85, 1.15, 0.95, 1.08][i % 5] };
 }
 const LANG_CODES = { English: 'en', Spanish: 'es', French: 'fr', German: 'de', Portuguese: 'pt', Italian: 'it', Dutch: 'nl', Polish: 'pl', Russian: 'ru', Japanese: 'ja', Korean: 'ko', 'Chinese (Simplified)': 'zh', 'Chinese (Traditional)': 'zh', Hindi: 'hi', Arabic: 'ar', Turkish: 'tr' };
-function speak(text, speaker) {
+function speak(text, speaker, token) {
   return new Promise(res => {
     const chunks = text.match(/[^.!?]+[.!?]*\s*/g) || [text];
     let i = 0;
     const next = () => {
-      if (i >= chunks.length || !state.reading) return res();
+      if (i >= chunks.length || state.readToken !== token) return res(); // a newer read (or stop) owns the voice now
       const u = new SpeechSynthesisUtterance(chunks[i++]);
       const v = voiceFor(speaker);
       if (v.voice) u.voice = v.voice;
@@ -612,10 +678,11 @@ async function tableRead(from) {
   for (let i = from || 0; i < state.readSeq.length; i++) {
     if (state.readToken !== token) return;
     const it = state.readSeq[i];
+    state.readingNow = it.type === 'speech' ? it.speaker + ': ' + it.text : it.type === 'pause' ? 'Pause ' + it.seconds + 's' : (it.type === 'music' ? 'MUSIC: ' : 'SFX: ') + it.label;
     $$('#perform .reading').forEach(x => x.classList.remove('reading'));
     const el = document.getElementById(it.el);
     if (el) { (el.closest('.blk') || el).classList.add('reading'); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-    if (it.type === 'speech') await speak(it.text, it.speaker);
+    if (it.type === 'speech') await speak(it.text, it.speaker, token);
     else if (it.type === 'pause') await sleep(it.seconds * 1000 / (Number(state.settings.readRate) || 1));
     else if (state.settings.readSfx) { const p = playCueLabel(it.label, it.el, it.type === 'music' ? 4 : 6); if (p) await p; }
   }
@@ -705,7 +772,8 @@ async function runLane(r, lane, prompt) {
   renderToolIf('runs'); updateGhost(); markDirty();
   return lane.status === 'done' && lane.text.trim() ? lane.text : null;
 }
-function finishRun(r) {
+function finishRun(r, proj) {
+  if (proj && proj !== state.project) api.saveProject(proj); // finished after the user switched projects: save it to its own project
   r.status = r.cancelled ? 'cancelled' : r.lanes.some(l => l.status === 'done') ? 'done' : 'error';
   if (r.final) r.activeLane = r.final;
   state.liveRuns.delete(r.id);
@@ -762,6 +830,7 @@ async function generate(customPrompt) {
   if (!b) return;
   const e = state.settings.engine;
   const title = K.MODES[b.mode].label + ' · ' + K.typeOf(b.type).label;
+  const proj = state.project, startText = editor().value;
   let r;
   try {
     if (e.mode === 'single' || customPrompt) {
@@ -805,8 +874,10 @@ async function generate(customPrompt) {
         }
       }
     }
-    finishRun(r);
-    if (r.final && !r.cancelled && state.settings.autoApply) applyLane(r, r.lanes.find(l => l.id === r.final), b.mode === 'continue' ? 'append' : 'replace');
+    finishRun(r, proj);
+    const unchanged = state.project === proj && editor().value === startText;
+    if (r.final && !r.cancelled && state.settings.autoApply && !unchanged) toast('The script or project changed while the AI was writing, so nothing was replaced. Use the result from AI Runs.', 'err');
+    else if (r.final && !r.cancelled && state.settings.autoApply) applyLane(r, r.lanes.find(l => l.id === r.final), b.mode === 'continue' ? 'append' : 'replace');
     else if (r.status === 'error') toast('Generation failed — see AI Runs for details.', 'err');
   } finally {
     state.genRun = null;
@@ -816,11 +887,12 @@ async function generate(customPrompt) {
 function applyLane(r, lane, how) {
   if (!lane || !lane.text) return;
   const text = cleanOutput(lane.text);
-  if (how === 'append') appendToEditor(text, 'Before ' + r.title);
-  else if (how === 'insert') { snapshot('Before insert', true); insertAtCursor(text); }
-  else replaceEditor(text, 'Before ' + r.title);
+  let snapId;
+  if (how === 'append') snapId = appendToEditor(text, 'Before ' + r.title);
+  else if (how === 'insert') { snapId = snapshot('Before insert', true); insertAtCursor(text); }
+  else snapId = replaceEditor(text, 'Before ' + r.title);
   r.applied = lane.id;
-  toast('Script updated from ' + pname(lane.provider), 'ok', { label: 'Undo', fn: () => { const s = state.project.snapshots[0]; if (s) restoreSnapshot(s.id, false); } });
+  toast('Script updated from ' + pname(lane.provider), 'ok', { label: 'Undo', fn: () => undoTo(snapId) });
 }
 async function assist(instruction, label, wholeOnly) {
   const ed = editor();
@@ -830,28 +902,32 @@ async function assist(instruction, label, wholeOnly) {
   if (!passage.trim()) return toast('Write or generate a script first.', 'err');
   const m = primaryMember();
   if (!checkReady([m])) return;
+  const proj = state.project;
   const r = newRun('assist', label + (hasSel ? ' · selection' : ' · whole script'));
   const lane = addLane(r, m);
   const out = await runLane(r, lane, K.buildAssistPrompt(instruction, passage, brief(), whole));
   r.final = out ? lane.id : null;
-  finishRun(r);
+  finishRun(r, proj);
   if (!out || r.cancelled || !state.settings.autoApply) return;
+  if (state.project !== proj) return toast('You switched projects, so the result stayed in that project\'s AI Runs.', 'err');
   const text = cleanOutput(out);
-  if (hasSel && editor().value.slice(s, e) === passage) { replaceRange(s, e, text, 'Before ' + label); r.applied = lane.id; }
-  else if (!hasSel && editor().value === whole) { replaceEditor(text, 'Before ' + label); r.applied = lane.id; }
+  let snapId;
+  if (hasSel && editor().value.slice(s, e) === passage) { snapId = replaceRange(s, e, text, 'Before ' + label); r.applied = lane.id; }
+  else if (!hasSel && editor().value === whole) { snapId = replaceEditor(text, 'Before ' + label); r.applied = lane.id; }
   else return toast('The script changed while the AI was working, so nothing was replaced. Use the result in AI Runs.', 'err');
-  toast(label + ' applied', 'ok', { label: 'Undo', fn: () => { const sn = state.project.snapshots[0]; if (sn) restoreSnapshot(sn.id, false); } });
+  toast(label + ' applied', 'ok', { label: 'Undo', fn: () => undoTo(snapId) });
 }
 async function runTool(key, extra) {
   const t = K.TOOL_ACTIONS[key] || { label: 'Answer', prompt: extra };
   const m = primaryMember();
   if (!checkReady([m])) return;
+  const proj = state.project;
   const r = newRun('tool', t.label);
   const lane = addLane(r, m);
   const prompt = K.buildToolPrompt(t.prompt, editor().value, brief());
   if (!editor().value.trim()) prompt.user += '\n\nBrief:\n' + K.buildPrompt({ ...brief(), mode: 'create' }).user;
   await runLane(r, lane, prompt);
-  finishRun(r);
+  finishRun(r, proj);
 }
 async function brainstorm() {
   const m = primaryMember();
@@ -994,6 +1070,7 @@ async function setView(v) {
   if (v === 'sounds') renderSounds();
   if (v === 'providers') renderProviders();
   if (v === 'settings') renderSettings();
+  if (v === 'remote') { renderRemote(); refreshRemoteStatus(); }
   if (v !== 'studio') stopRead();
 }
 async function renderProjects() {
@@ -1027,7 +1104,7 @@ function renderProviders() {
       (!p.local ? '<div class="field"><label>' + ic('key') + 'API key</label><div class="row gap"><input class="input" type="password" id="key-' + p.id + '" placeholder="' + (p.keyStatus === 'saved' ? '•••••••• saved — paste to replace' : p.keyStatus === 'env' ? 'Using environment variable' : 'Paste your API key') + '" autocomplete="off" spellcheck="false">' +
         '<button class="btn sm" data-action="save-key" data-id="' + p.id + '">Save</button>' + (p.keyStatus === 'saved' ? '<button class="icon-btn" data-action="clear-key" data-id="' + p.id + '" title="Remove key">' + ic('trash') + '</button>' : '') + '</div></div>' : '') +
       (p.local || p.id === 'custom' ? '<div class="field"><label>' + ic('link') + 'Server URL</label><input class="input" data-pbind="baseUrl" data-id="' + p.id + '" value="' + esc(p.baseUrl) + '" placeholder="' + esc(p.defaultBaseUrl || 'https://your-server/v1') + '" spellcheck="false"></div>' : '') +
-      '<div class="field"><label>' + ic('cpu') + 'Default model</label><div class="row gap"><input class="input" data-pbind="model" data-id="' + p.id + '" value="' + esc(p.model) + '" list="dl-' + p.id + '" spellcheck="false" placeholder="model id">' +
+      '<div class="field"><label>' + ic('cpu') + 'Default model</label><div class="row gap">' + modelCombo('<input class="input" data-pbind="model" data-id="' + p.id + '" value="' + esc(p.model) + '" spellcheck="false" placeholder="model id">', p.id) +
         '<button class="btn sm" data-action="load-models" data-id="' + p.id + '" title="Fetch the models available to you">' + ic('refresh') + 'Models</button></div>' +
         ((p.models || []).length ? '<div class="hint">' + p.models.length + ' models available — pick one from the list.</div>' : p.local ? '<div class="hint">Start ' + esc(p.label) + ', then press Models to list what you have installed.</div>' : '') + '</div>' +
       '<div class="row gap"><button class="btn sm" data-action="test-provider" data-id="' + p.id + '">' + ic('zap') + 'Test</button>' +
@@ -1224,6 +1301,19 @@ const ACTIONS = {
   'open-data': () => api.openData(),
   'open-url': el => api.openExternal(el.dataset.url),
   'goto-providers': (el, e) => { e.preventDefault(); setView('providers'); },
+  'model-menu': el => openModelMenu(el),
+  'copy-text': el => { navigator.clipboard.writeText(el.dataset.v); toast('Copied', 'ok'); },
+  'remote-update': async el => {
+    const { sent } = await api.remotePushUpdate(el.dataset.id);
+    toast(sent ? 'Update sent to ' + el.dataset.name + '. The phone downloads it, installs it and restarts Scripty Remote.' : el.dataset.name + ' is not connected right now. Open Scripty Remote on it and try again.', sent ? 'ok' : 'err');
+  },
+  'remote-qr': el => { state.remoteQr = Number(el.dataset.i) || 0; renderRemote(); },
+  'remote-newcode': async () => { state.remote = await api.remoteNewCode(); renderRemote(); },
+  'remote-revoke': async el => {
+    if (!(await confirmModal('Unlink this device? It will need a new code to connect again.', 'Unlink'))) return;
+    state.remote = await api.remoteRevoke(el.dataset.id); renderRemote();
+  },
+  'remote-port': async () => { state.remote = await api.remotePort(Number($('#remote-port').value)); lastRemoteJSON = ''; renderRemote(); },
   // brief
   'engine-mode': el => { state.settings.engine.mode = el.dataset.mode; saveSettings(); renderBrief(); },
   'room-add': () => { const used = state.settings.engine.room.map(m => m.provider); const next = Object.values(state.providers).find(p => p.ready && !used.includes(p.id)) || Object.values(state.providers)[0];
@@ -1360,6 +1450,10 @@ function bindEvents() {
     if (el.dataset.override != null) { if (el.value) state.project.sfxOverrides[el.dataset.override] = el.value; else delete state.project.sfxOverrides[el.dataset.override]; markDirty(); renderTool(); if (state.editorMode === 'perform') renderPerform(); }
     else if (el.dataset.lib) saveLibField(el);
     else if (el.id === 'read-sfx') { state.settings.readSfx = el.checked; saveSettings(); }
+    else if (el.id === 'remote-on') {
+      api.remoteEnable(el.checked).then(s => { state.remote = s; lastRemoteJSON = ''; $('#remote-dot').classList.toggle('hidden', !s.running); renderRemote(); pushRemote(); })
+        .catch(err => toast(cleanErr(err), 'err'));
+    }
   });
   const ed = editor();
   ['select', 'keyup', 'mouseup'].forEach(ev => ed.addEventListener(ev, () => renderStatus()));
@@ -1404,6 +1498,119 @@ async function saveLibField(el) {
   state.sfxLib = await api.sfxUpdate(s);
 }
 
+// ================= remote link =================
+let lastRemoteJSON = '', remoteTick = 0;
+async function refreshRemoteStatus() {
+  try { state.remote = await api.remoteStatus(); } catch { return; }
+  $('#remote-dot').classList.toggle('hidden', !state.remote.running);
+  if (state.view === 'remote') renderRemote();
+}
+async function refreshRemoteProjects() {
+  state.remoteProjects = (await api.listProjects()).slice(0, 60).map(p => ({ id: p.id, title: p.title, type: K.typeOf(p.type).label, words: p.words, updatedAt: p.updatedAt }));
+}
+const verName = code => Math.floor(code / 10000) + '.' + Math.floor(code / 100) % 100 + '.' + code % 100; // 10203 -> 1.2.3
+function renderRemote() {
+  const r = state.remote || {}, port = r.configuredPort || 47830, on = !!r.running; // show what is actually listening
+  const qi = Math.min(state.remoteQr || 0, Math.max(0, (r.nets || []).length - 1));
+  $('#remote-body').innerHTML = '<div class="remote-grid"><div class="card remote-main">' +
+    '<div class="switch-row"><div><b>Remote Link</b><div class="hint">' + (on ? 'On · port ' + r.port + ' · ' + r.clients + ' device' + (r.clients === 1 ? '' : 's') + ' connected now'
+      : r.enabled ? 'Could not start.' : 'Off — nothing on this PC is reachable from other devices.') + '</div></div>' +
+    '<label class="switch"><input type="checkbox" id="remote-on"' + (r.enabled || on ? ' checked' : '') + '><span></span></label></div>' +
+    (r.error ? '<div class="advice"><div class="warn">' + esc(r.error) + '</div></div>' : '') +
+    (on && r.locked ? '<div class="advice"><div class="warn">Pairing is locked after too many wrong codes.</div></div><button class="btn sm" data-action="remote-newcode">' + ic('refresh') + 'New code</button>' : '') +
+    (on && !r.locked ? '<div class="pair">' + ((r.qrs || [])[qi] ? '<img class="qr" src="' + r.qrs[qi] + '" alt="Pairing QR code">' : '') +
+      '<div class="pair-info"><div class="lbl">Scan with your phone camera, or open an address below and type the code</div>' +
+      '<div class="pair-code">' + esc(String(r.code).slice(0, 3) + ' ' + String(r.code).slice(3)) + '</div>' +
+      (r.nets || []).map((n, i) => '<div class="url-row' + (i === qi ? ' sel' : '') + '"><button class="url-pick" data-action="remote-qr" data-i="' + i + '" title="Show the QR code for this address">' +
+        '<code>' + esc(n.url) + '</code><small>' + esc(n.name) + (i === qi ? ' · in QR' : '') + '</small></button>' +
+        '<button class="icon-btn" data-action="copy-text" data-v="' + esc(n.url) + '" title="Copy">' + ic('copy') + '</button></div>').join('') +
+      ((r.nets || []).length > 1 ? '<div class="hint">Phone can’t connect? Tap a different address to switch the QR code.</div>' : '') +
+      (r.urls && r.urls.length ? '' : '<div class="hint">No network connection found.</div>') +
+      '<div class="hint">Each code and QR link works once and expires after 10 minutes.</div><button class="btn sm ghost" data-action="remote-newcode">' + ic('refresh') + 'New code</button></div></div>' : '') +
+    '</div><div class="card"><h3>' + ic('phone') + 'Linked devices</h3>' +
+    ((r.devices || []).length ? r.devices.map(d => {
+      const online = (r.online || []).includes(d.id), latest = r.apkVersion;
+      const app = d.appVersion ? 'Android app ' + verName(d.appVersion) : 'browser';
+      const outdated = d.appVersion && latest && d.appVersion < latest.versionCode;
+      return '<div class="list-row"><div class="meta"><b>' + esc(d.name) + ' <span class="pill ' + (online ? 'ok' : '') + '">' + (online ? 'Online' : 'Offline') + '</span></b>' +
+        '<span>' + esc(app) + (outdated ? ' · <b style="color:var(--warn)">update ' + esc(latest.versionName) + ' available</b>' : d.appVersion && latest ? ' · up to date' : '') + ' · last seen ' + timeAgo(d.lastSeen) + '</span></div>' +
+        (outdated ? '<button class="btn sm primary" data-action="remote-update" data-id="' + esc(d.id) + '" data-name="' + esc(d.name) + '"' + (online ? '' : ' disabled title="Open Scripty Remote on the phone first"') + '>Update app</button>' : '') +
+        '<button class="btn sm danger" data-action="remote-revoke" data-id="' + esc(d.id) + '">Unlink</button></div>';
+    }).join('') : '<div class="hint">No devices linked yet.</div>') +
+    '<div class="field" style="margin-top:10px"><label>Port</label><div class="row gap"><input class="input" id="remote-port" type="number" min="1024" max="65535" value="' + port + '" style="max-width:130px"><button class="btn sm" data-action="remote-port">Apply</button></div></div></div>' +
+    '<div class="card"><h3>' + ic('phone') + 'Android app</h3>' +
+      (r.apk ? (on ? '<div class="pair">' + ((r.apkQrs || [])[qi] ? '<img class="qr small" src="' + r.apkQrs[qi] + '" alt="Android app download QR code">' : '') +
+          '<div class="pair-info hint remote-help"><p><b>1.</b> Scan this with your Android phone to download <b>Scripty Remote</b>, or open <code>' + esc(((r.nets || [])[qi] || {}).url || '') + 'scripty-remote.apk</code>.</p>' +
+          '<p><b>2.</b> Open the download. If Android asks, allow installing apps from your browser.</p>' +
+          '<p><b>3.</b> Open Scripty Remote and type this PC’s address, or scan the pairing QR above with your camera and choose <i>Open with Scripty Remote</i>.</p></div></div>'
+        : '<div class="hint">Switch on Remote Link to show the download QR code for your phone.</div>')
+        : '<div class="hint">The Android app isn’t bundled in this build yet. Build it with <code>npm run android</code>, then <code>npm run dist</code>. Until then, the remote works in your phone’s browser.</div>') +
+    '</div>' +
+    '<div class="card"><h3>' + ic('globe') + 'Use it from anywhere</h3><div class="hint remote-help">' +
+      '<p><b>Same Wi-Fi:</b> works right away. The first time, let Scripty through Windows Firewall on <i>Private</i> networks.</p>' +
+      '<p><b>Away from home:</b> install the free <b>Tailscale</b> app on this PC and on your phone and sign in to both. Then open <code>http://&lt;this PC’s Tailscale name&gt;:' + port + '/</code> on the phone and link with a code. Everything travels inside your own encrypted network.</p>' +
+      '<p><b>Keep it private:</b> don’t port-forward this to the public internet. The link is built for trusted networks.</p>' +
+      '<p><b>Install like an app:</b> after linking, choose “Add to Home Screen” in your phone’s browser.</p></div></div></div>';
+}
+function remoteSnapshot() {
+  const a = state.analysis, b = brief(), seen = new Set();
+  const live = state.project.runs.filter(r => state.liveRuns.has(r.id)).flatMap(r => r.lanes.filter(l => l.status === 'running'))[0];
+  const tool = state.project.runs.find(r => r.kind === 'tool' && r.status === 'done');
+  const toolLane = tool && tool.lanes.find(l => l.status === 'done');
+  return {
+    title: state.project.title, projectId: state.project.id, type: K.typeOf(b.type).label, content: editor().value.slice(0, 80000),
+    words: a.words, seconds: a.seconds, target: targetPlan().seconds, editorMode: state.editorMode,
+    cues: a.cues.filter(c => c.kind !== 'pause' && !seen.has(c.label.toLowerCase()) && seen.add(c.label.toLowerCase()))
+      .map(c => { const m = cueMatch(c.label); return { label: c.label, kind: c.kind, match: m ? m.name : null }; }),
+    library: state.sfxLib.map(s => ({ id: s.id, name: s.name })),
+    reading: state.reading, readingNow: state.reading ? state.readingNow || '' : '',
+    prompter: { open: !$('#prompter').classList.contains('hidden'), playing: pr.playing, speed: Number($('#pr-speed').value) },
+    generating: !!state.genRun, busy: state.liveRuns.size > 0,
+    live: live ? { name: live.name, words: K.countWords(live.text), tail: live.text.slice(-1500) } : null,
+    toolResult: toolLane ? { title: tool.title, text: toolLane.text.slice(0, 6000) } : null,
+    engine: state.settings.engine.mode === 'room' ? 'Writers\' Room · ' + STRATEGIES[state.settings.engine.strategy][0] : pname(state.settings.engine.single.provider),
+    projects: state.remoteProjects || [],
+    assist: Object.entries(K.ASSIST_ACTIONS).map(([k, x]) => ({ k, label: x.label })),
+    tools: Object.entries(K.TOOL_ACTIONS).filter(([k]) => k !== 'ideas').map(([k, x]) => ({ k, label: x.label })),
+    types: Object.entries(K.SCRIPT_TYPES).map(([k, t]) => ({ k, label: t.label })),
+  };
+}
+function pushRemote() {
+  if (!state.remote || !state.remote.running || !state.project) return;
+  if (++remoteTick % 40 === 0) refreshRemoteProjects();
+  const s = remoteSnapshot(), j = JSON.stringify(s);
+  if (j !== lastRemoteJSON) { lastRemoteJSON = j; api.sendRemoteState(s); }
+}
+/** Commands from linked devices. main.js only forwards allow-listed types with sanitized fields. */
+function handleRemote(c) {
+  const studio = () => { if (state.view !== 'studio') setView('studio'); };
+  const quiet = ['play-sound', 'play-cue', 'stop-sounds', 'prompter-speed', 'prompter-scroll'];
+  switch (c.type) {
+    case 'generate': studio(); if (!state.genRun) generate(); break;
+    case 'stop-generate': if (state.genRun) cancelRun(state.genRun); else for (const r of state.project.runs) if (state.liveRuns.has(r.id)) cancelRun(r); break;
+    case 'play-sound': { const s = state.sfxLib.find(x => x.id === c.id) || K.BUILTIN_SOUNDS.find(x => x.id === c.id); if (s) Sound.play(s); break; }
+    case 'play-cue': if (c.label) playCueLabel(c.label); break;
+    case 'stop-sounds': Sound.stopAll(); break;
+    case 'read': studio(); stopRead(); setEditorMode('perform'); tableRead(Math.max(0, Number(c.from) || 0)); break;
+    case 'read-stop': stopRead(); break;
+    case 'prompter-open': openPrompter(); break;
+    case 'prompter-toggle': if ($('#prompter').classList.contains('hidden')) openPrompter(); if (!$('#prompter').classList.contains('hidden')) prompterToggle(); break;
+    case 'prompter-close': closePrompter(); break;
+    case 'prompter-speed': { const s = $('#pr-speed'); s.value = Math.max(5, Math.min(200, Number(s.value) + (Number(c.delta) || 0))); break; }
+    case 'prompter-scroll': { const sc = $('#prompter-scroll'); sc.scrollTop += Number(c.delta) || 0; pr.pos = sc.scrollTop; break; }
+    case 'assist': { const a = Object.hasOwn(K.ASSIST_ACTIONS, c.k || '') && K.ASSIST_ACTIONS[c.k]; if (a) { studio(); assist(a.prompt, a.label); } break; }
+    case 'assist-custom': if (c.text && c.text.trim()) { studio(); assist(c.text.slice(0, 2000), 'Remote edit'); } break;
+    case 'tool': if (Object.hasOwn(K.TOOL_ACTIONS, c.k || '')) runTool(c.k); break;
+    case 'open-project': if (/^[\w-]{6,64}$/.test(c.id || '')) openProject(c.id); break;
+    case 'new-project': newScript(Object.hasOwn(K.SCRIPT_TYPES, c.k || '') ? c.k : undefined); break;
+    case 'editor-mode': studio(); setEditorMode(c.mode === 'perform' ? 'perform' : 'edit'); break;
+    case 'insert-cue': if (c.label) { studio(); insertSnippet('[SFX: ' + c.label.replace(/[[\]\r\n]/g, '').slice(0, 80) + ']'); } break;
+    case 'snapshot': ACTIONS.snapshot(); break;
+    default: return;
+  }
+  if (!quiet.includes(c.type)) toast('Remote: ' + c.type.replace(/-/g, ' '));
+}
+
 // ================= boot =================
 function renderAll() {
   $('#project-title').value = state.project.title;
@@ -1432,10 +1639,16 @@ async function init() {
   bindEvents();
   renderAll();
   await saveNow();
+  api.onRemoteCommand(cmd => { try { handleRemote(cmd); } catch (e) { toast(cleanErr(e), 'err'); } });
+  await refreshRemoteProjects();
+  await refreshRemoteStatus();
+  setInterval(pushRemote, 500);
+  setInterval(() => { if (state.view === 'remote') refreshRemoteStatus(); }, 3000);
 }
 
 // Hooks used by the --smoke self-check and screenshot run.
 window.__scripty = {
+  async flush() { await saveNow(); await api.setSettings(state.settings); return true; },
   async selfTest() {
     const errs = [];
     const ok = (c, m) => { if (!c) errs.push(m); };
@@ -1453,6 +1666,14 @@ window.__scripty = {
     ok($$('#provider-grid .pv').length === Object.keys(state.providers).length, 'provider cards');
     ok($$('#board-grid .snd').length === K.BUILTIN_SOUNDS.length, 'sound board');
     ok(toSRT().includes('-->') && exportHTML().includes('<h1>'), 'exports build');
+    // model picker: lists every model (not just matches for the current value) and saves the pick
+    state.settings.engine.mode = 'single'; state.settings.engine.single = { provider: 'anthropic', model: 'claude-sonnet-5-5' }; renderBrief();
+    openModelMenu($('#brief-body .combo-btn'));
+    const items = $$('#mm-list .mm-item').map(b => b.dataset.model);
+    ok(items.length === state.providers.anthropic.models.length && items.length >= 4, 'model picker lists all models (' + items.length + ')');
+    $('#mm-list [data-model="claude-opus-5-5"]').click();
+    ok(state.settings.engine.single.model === 'claude-opus-5-5' && !$('#mm-list'), 'model picker saves the pick and closes');
+    state.settings.engine.single.model = ''; renderBrief();
     const p = K.buildPrompt(buildBriefForAI(true));
     ok(p.user.includes('Alex') && p.user.includes('words'), 'prompt built from brief');
     if (errs.length) { console.error('selfTest: ' + errs.join('; ')); return errs.join('; '); }
@@ -1470,6 +1691,11 @@ window.__scripty = {
     }
     if (v === 'light') { state.settings.theme = 'light'; applySettings(); await setView('studio'); setEditorMode('edit'); setTool('length'); return; }
     if (v === 'studio') { await setView('studio'); setEditorMode('edit'); setTool('assist'); return; }
+    if (v === 'models') {
+      await setView('providers');
+      state.providers.openai.models = ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini', 'o3', 'o4-mini', 'chatgpt-4o-latest', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+      renderProviders(); openModelMenu($('#provider-grid .pv:nth-child(2) .combo-btn')); return;
+    }
     await setView(v);
   },
 };
