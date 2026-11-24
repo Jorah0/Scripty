@@ -9,7 +9,7 @@ const os = require('os');
 
 const COMMANDS = new Set(['generate', 'stop-generate', 'play-sound', 'play-cue', 'stop-sounds', 'read', 'read-stop',
   'prompter-open', 'prompter-toggle', 'prompter-close', 'prompter-speed', 'prompter-scroll', 'assist', 'assist-custom',
-  'tool', 'open-project', 'new-project', 'editor-mode', 'insert-cue', 'snapshot']);
+  'tool', 'open-project', 'new-project', 'editor-mode', 'insert-cue', 'snapshot', 'next-sound', 'replay-sound']);
 const FIELDS = ['id', 'label', 'k', 'text', 'from', 'delta', 'mode'];
 // Only these files are ever served: the remote web app plus the two shared modules it reuses.
 const STATIC = {

@@ -1,10 +1,13 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, nativeTheme, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, nativeTheme, Menu, globalShortcut } = require('electron');
+const K = require('./src/core/scriptkit.js');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const P = require('./src/core/providers.js');
+const ML = require('./src/core/modellab.js');
+const { execFile } = require('child_process');
 const { createRemote } = require('./src/core/remote.js');
 const QRCode = require('qrcode');
 
@@ -30,8 +33,13 @@ function writeJSON(p, v) {
 
 const DEFAULT_SETTINGS = {
   theme: 'dark', accent: 'violet', editorFont: 'sans', editorSize: 16, temperature: 0.8, maxTokens: 8192,
-  sfxVolume: 0.8, defaultType: 'youtube', readRate: 1, readSfx: true,
+  sfxVolume: 0.8, defaultType: 'youtube', readRate: 1, readSfx: true, minimizeOnClose: true, openAtLogin: false,
 };
+// Start with Windows. The portable build runs from a temp copy, so register the real exe it was launched from.
+function applyLoginItem() {
+  if (!app.isPackaged) return; // dev runs would register electron.exe
+  app.setLoginItemSettings({ openAtLogin: !!config.settings.openAtLogin, path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: ['--autostart'] });
+}
 function loadConfig() {
   const c = readJSON(CONFIG(), {});
   return { settings: { ...DEFAULT_SETTINGS, ...(c.settings || {}) }, providers: c.providers || {}, keys: c.keys || {},
@@ -133,8 +141,132 @@ async function fetchJSON(url, headers, ms) {
   } finally { clearTimeout(t); }
 }
 
+// ---------- Model Lab: hardware probe, catalog, learning examples, training kits ----------
+const LAB = () => dataPath('lab.json');
+const EXAMPLES = () => dataPath('lab-examples.json');
+// Unlike readJSON, a locked or corrupt file is an error: falling back to [] would let the next write wipe every example.
+function readExamples() {
+  try { return JSON.parse(fs.readFileSync(EXAMPLES(), 'utf8')); }
+  catch (e) { if (e.code === 'ENOENT') return []; throw new Error('Could not read your training examples (' + (e.code || 'invalid JSON') + '). Nothing was changed. A backup is in lab-examples.json.bak.'); }
+}
+function writeExamples(list) {
+  if (fs.existsSync(EXAMPLES())) fs.copyFileSync(EXAMPLES(), EXAMPLES() + '.bak');
+  writeJSON(EXAMPLES(), list);
+}
+const LAB_KEYS = ['profile', 'workload', 'route', 'design', 'base', 'loraRank', 'tokenizer', 'name', 'epochs', 'teacher', 'autoLearn', 'filters'];
+const str = (v, n) => String(v == null ? '' : v).slice(0, n);
+
+function probeHardware() {
+  const cpus = os.cpus();
+  const hw = { host: os.hostname(), cpu: (cpus[0] || {}).model || '', cores: cpus.length, ramGiB: os.totalmem() / ML.GiB, ramFreeGiB: os.freemem() / ML.GiB,
+    diskFreeGiB: null, gpus: [], telemetry: 'nvidia-smi', at: Date.now() };
+  try { const s = fs.statfsSync(app.getPath('userData')); hw.diskFreeGiB = s.bavail * s.bsize / ML.GiB; } catch { /* unsupported FS */ }
+  return new Promise(resolve => {
+    // ponytail: NVIDIA only (nvidia-smi ships with the driver); AMD/Intel/Apple fall back to a manual profile.
+    execFile('nvidia-smi', ['--query-gpu=name,memory.total,memory.free,memory.used,driver_version', '--format=csv,noheader,nounits'], { timeout: 5000, windowsHide: true }, (err, out) => {
+      if (err) { hw.telemetry = 'unavailable'; return resolve(hw); }
+      hw.gpus = String(out).trim().split(/\r?\n/).filter(Boolean).map(l => {
+        const [name, total, free, used, driver] = l.split(',').map(s => s.trim());
+        return { name, totalGiB: Number(total) / 1024, freeGiB: Number(free) / 1024, usedGiB: Number(used) / 1024, driver };
+      });
+      resolve(hw);
+    });
+  });
+}
+const ollamaBase = () => String(providerCfg('ollama').baseUrl || P.PROVIDERS.ollama.baseUrl).replace(/\/+$/, '').replace(/\/v1$/, '');
+async function postJSON(url, body, ms) {
+  const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), ms || 15000);
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
+    if (!res.ok) throw new Error(res.status + ' ' + (await res.text()).slice(0, 200));
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+async function labCatalog(q, withHF) {
+  const items = [], sources = [];
+  const base = ollamaBase();
+  try {
+    const tags = ((await fetchJSON(base + '/api/tags', {}, 6000)).models || []).slice(0, 80);
+    const shows = await Promise.all(tags.map(t => postJSON(base + '/api/show', { model: t.name }, 8000).catch(() => null)));
+    tags.forEach((t, i) => items.push(ML.variantFromOllama(t, shows[i])));
+    sources.push({ id: 'ollama', label: 'Ollama · ' + base, ok: true, count: tags.length, at: Date.now() });
+  } catch (e) { sources.push({ id: 'ollama', label: 'Ollama · ' + base, ok: false, error: e.name === 'AbortError' ? 'timed out' : 'not reachable — is Ollama running?' }); }
+  if (withHF) {
+    const url = 'https://huggingface.co/api/models?filter=gguf&sort=downloads&limit=40' + (q ? '&search=' + encodeURIComponent(String(q).slice(0, 100)) : '') +
+      ['gguf', 'downloads', 'likes', 'pipeline_tag', 'tags'].map(x => '&expand[]=' + x).join('');
+    try {
+      const list = await fetchJSON(url, {}, 12000);
+      for (const m of list) items.push(ML.variantFromHF(m));
+      sources.push({ id: 'huggingface', label: 'Hugging Face Hub (GGUF)', ok: true, count: list.length, at: Date.now(), partial: true });
+    } catch (e) { sources.push({ id: 'huggingface', label: 'Hugging Face Hub', ok: false, error: e.status ? 'HTTP ' + e.status : 'not reachable' }); }
+  }
+  return { items, sources };
+}
+const pulls = new Map();
+async function labPull(sender, name) {
+  if (!/^[\w.:/-]{1,200}$/.test(name)) throw new Error('Bad model name');
+  const ctrl = new AbortController();
+  pulls.set(name, ctrl);
+  try {
+    const res = await fetch(ollamaBase() + '/api/pull', { method: 'POST', body: JSON.stringify({ model: name, stream: true }), signal: ctrl.signal });
+    if (!res.ok) throw new Error('Ollama: ' + (await res.text()).slice(0, 200));
+    let buf = '';
+    for await (const chunk of res.body) {
+      buf += Buffer.from(chunk).toString();
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const l of lines) {
+        let j; try { j = JSON.parse(l); } catch { continue; }
+        if (j.error) throw new Error('Ollama: ' + j.error);
+        if (!sender.isDestroyed()) sender.send('lab:event', { name, status: j.status, completed: j.completed, total: j.total });
+      }
+    }
+    return true;
+  } catch (e) { if (ctrl.signal.aborted) return false; throw e; } finally { pulls.delete(name); }
+}
+function cleanExample(x) {
+  return { id: crypto.randomUUID(), createdAt: Date.now(), label: str(x.label, 120), provider: str(x.provider, 40), model: str(x.model, 120),
+    system: str(x.system, 20000), user: str(x.user, 60000), output: str(x.output, 60000), teacher: '', teacherModel: '' };
+}
+function exportKit(o) {
+  o = o || {};
+  const design = o.design ? Object.fromEntries([...ML.ARCH_FIELDS.map(k => [k, Number(o.design[k])]), ['tied', !!o.design.tied]]) : null;
+  const opts = { mode: o.route === 'lora' ? 'lora' : 'scratch', design, base: str(o.base, 120), name: o.name, tokenizer: o.tokenizer === 'new' ? 'new' : str(o.tokenizer, 120),
+    lora: { rank: o.loraRank }, epochs: o.epochs, context: o.context };
+  if (opts.tokenizer !== 'new' && !/^[\w.-]+\/[\w.-]+$/.test(opts.tokenizer)) opts.tokenizer = 'new';
+  const kit = ML.trainingKit(opts);
+  const examples = readExamples();
+  const ds = ML.buildDataset(examples);
+  if (!ds.train.length) throw new Error('No training examples yet. Turn on "Learn from results I accept" or press Teach on an AI result first.');
+  const dir = dataPath('lab', 'kits', ML.safeName(o.name) + '-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19));
+  fs.mkdirSync(dir, { recursive: true });
+  for (const [f, body] of Object.entries(kit)) fs.writeFileSync(path.join(dir, f), body);
+  fs.writeFileSync(path.join(dir, 'train.jsonl'), ds.train.join('\n') + (ds.train.length ? '\n' : ''));
+  fs.writeFileSync(path.join(dir, 'eval.jsonl'), ds.eval.join('\n') + (ds.eval.length ? '\n' : ''));
+  const sha = crypto.createHash('sha256').update(ds.train.join('\n') + '\u0000' + ds.eval.join('\n')).digest('hex');
+  writeJSON(path.join(dir, 'design.json'), { mode: opts.mode, design, base: opts.base || null, tokenizer: opts.tokenizer, params: design && opts.mode === 'scratch' ? ML.paramCount(design) : null, createdAt: new Date().toISOString() });
+  writeJSON(path.join(dir, 'manifest.json'), { datasetSha256: sha, datasetHash: ds.hash, train: ds.train.length, eval: ds.eval.length,
+    teacherTargets: examples.filter(e => e.teacher).length, sources: [...new Set(examples.map(e => e.provider + '/' + e.model))], scripty: app.getVersion() });
+  shell.openPath(dir);
+  return { dir, train: ds.train.length, eval: ds.eval.length, hash: sha.slice(0, 12) };
+}
+
+// ---------- sound hotkeys: work system-wide (e.g. while OBS or a game has focus) when "global" is on ----------
+const HOTKEY_ACTIONS = ['next', 'replay', 'stop'];
+function applyHotkeys(hk) {
+  globalShortcut.unregisterAll();
+  const failed = [];
+  if (hk && hk.global) for (const a of HOTKEY_ACTIONS) {
+    const acc = String(hk[a] || '');
+    if (!acc) continue;
+    let ok = false;
+    try { ok = globalShortcut.register(acc, () => { if (win && !win.isDestroyed()) win.webContents.send('hotkey', a); }); } catch { /* invalid accelerator */ }
+    if (!ok) failed.push(acc); // taken by another app, or not a valid key
+  }
+  return { failed };
+}
+
 // ---------- window ----------
-let win;
+let win, quitting = false;
 const THEME_BAR = { dark: { color: '#0b0d12', symbolColor: '#c7cede' }, light: { color: '#f6f7fb', symbolColor: '#3b4252' } };
 function barFor(theme) { const t = theme === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : theme; return { ...(THEME_BAR[t] || THEME_BAR.dark), height: 46 }; }
 
@@ -153,6 +285,8 @@ function createWindow() {
   let closing = false;
   win.on('close', (e) => {
     if (closing || SMOKE) return;
+    // ponytail: X minimizes to the taskbar; closing it again while minimized (taskbar "Close window") really quits.
+    if (config.settings.minimizeOnClose && !quitting && !win.isMinimized()) { e.preventDefault(); win.minimize(); return; }
     e.preventDefault(); closing = true;
     const done = () => { if (!win.isDestroyed()) win.destroy(); };
     setTimeout(done, 2500);
@@ -169,6 +303,7 @@ function createWindow() {
     if (items.length) Menu.buildFromTemplate(items).popup({ window: win });
   });
   if (SMOKE) runSmoke();
+  else if (process.argv.includes('--autostart')) win.minimize(); // launched at login: sit in the taskbar
 }
 
 function runSmoke() {
@@ -189,7 +324,7 @@ function runSmoke() {
     if (SHOT_DIR) fs.mkdirSync(SHOT_DIR, { recursive: true });
     await smokeRemote(errors);
     if (SHOT_DIR) {
-      for (const view of ['studio', 'perform', 'writers', 'providers', 'sounds', 'projects', 'settings', 'remote', 'models', 'light']) {
+      for (const view of ['studio', 'perform', 'writers', 'providers', 'sounds', 'projects', 'settings', 'remote', 'lab', 'lab-design', 'models', 'light']) {
         try { await win.webContents.executeJavaScript('window.__scripty.show(' + JSON.stringify(view) + ')'); } catch (e) { errors.push('show ' + view + ': ' + e.message); }
         await new Promise(r => setTimeout(r, 500));
         fs.writeFileSync(path.join(SHOT_DIR, view + '.png'), (await win.webContents.capturePage()).toPNG());
@@ -283,7 +418,12 @@ function handle(ch, fn) { ipcMain.handle(ch, async (e, ...a) => fn(e, ...a)); }
 function registerIPC() {
   handle('app:info', () => ({ version: app.getVersion(), dataDir: app.getPath('userData'), encryption: safeStorage.isEncryptionAvailable(), smoke: SMOKE }));
   handle('config:get', () => ({ settings: config.settings, providers: publicProviders(), encryption: safeStorage.isEncryptionAvailable() }));
-  handle('config:setSettings', (e, s) => { config.settings = { ...config.settings, ...(s || {}) }; saveConfig(); return config.settings; });
+  handle('config:setSettings', (e, s) => {
+    const was = config.settings.openAtLogin;
+    config.settings = { ...config.settings, ...(s || {}) }; saveConfig();
+    if (config.settings.openAtLogin !== was) applyLoginItem();
+    return config.settings;
+  });
   handle('config:setProvider', (e, id, patch) => {
     if (!P.PROVIDERS[id]) throw new Error('Unknown provider');
     const allowed = {};
@@ -353,7 +493,7 @@ function registerIPC() {
   });
   handle('file:reveal', (e, p) => { if (typeof p === 'string' && fs.existsSync(p)) shell.showItemInFolder(p); });
 
-  const sfxLib = () => readJSON(SFX_INDEX(), []).map(s => ({ ...s, path: path.join(SFX_DIR(), s.file) }));
+  const sfxLib = () => readJSON(SFX_INDEX(), []).map(s => (s.file ? { ...s, path: path.join(SFX_DIR(), s.file) } : s));
   handle('sfx:list', () => sfxLib());
   handle('sfx:import', async () => {
     const r = await dialog.showOpenDialog(win, { title: 'Add sounds to your library', properties: ['openFile', 'multiSelections'],
@@ -371,6 +511,14 @@ function registerIPC() {
     writeJSON(SFX_INDEX(), lib);
     return sfxLib();
   });
+  handle('sfx:addGenerated', (e, recipe, prompt) => {
+    const r = K.sanitizeRecipe(recipe); // never trust the renderer's copy of an AI reply
+    const lib = readJSON(SFX_INDEX(), []);
+    lib.push({ id: crypto.randomUUID(), name: r.name, volume: 1, keywords: r.keywords, recipe: r, ai: true, prompt: String(prompt || '').slice(0, 300) });
+    writeJSON(SFX_INDEX(), lib);
+    return sfxLib();
+  });
+  handle('hotkeys:set', (e, hk) => applyHotkeys(hk));
   handle('sfx:update', (e, entry) => {
     const lib = readJSON(SFX_INDEX(), []);
     const i = lib.findIndex(s => s.id === entry.id);
@@ -384,7 +532,7 @@ function registerIPC() {
   handle('sfx:remove', (e, id) => {
     const lib = readJSON(SFX_INDEX(), []);
     const s = lib.find(x => x.id === id);
-    if (s) fs.rmSync(path.join(SFX_DIR(), s.file), { force: true });
+    if (s && s.file) fs.rmSync(path.join(SFX_DIR(), s.file), { force: true });
     writeJSON(SFX_INDEX(), lib.filter(x => x.id !== id));
     return sfxLib();
   });
@@ -395,6 +543,38 @@ function registerIPC() {
     if (win && win.setTitleBarOverlay) win.setTitleBarOverlay(barFor(theme));
   });
   handle('data:open', () => shell.openPath(app.getPath('userData')));
+
+  // ---------- Model Lab ----------
+  handle('lab:get', () => readJSON(LAB(), {}));
+  handle('lab:set', (e, patch) => {
+    const lab = readJSON(LAB(), {});
+    for (const k of LAB_KEYS) if (patch && k in patch) lab[k] = patch[k];
+    if (JSON.stringify(lab).length > 50000) throw new Error('Lab settings too large');
+    writeJSON(LAB(), lab);
+    return lab;
+  });
+  handle('lab:hardware', () => probeHardware());
+  handle('lab:catalog', (e, q, withHF) => labCatalog(q, !!withHF));
+  handle('lab:pull', (e, name) => labPull(e.sender, String(name)));
+  handle('lab:cancelPull', (e, name) => { const c = pulls.get(String(name)); if (c) c.abort(); return !!c; });
+  handle('lab:examples', () => readExamples());
+  handle('lab:addExample', (e, x) => {
+    if (!x || !String(x.user || '').trim() || !String(x.output || '').trim()) return null;
+    const list = readExamples();
+    const ex = cleanExample(x);
+    list.push(ex);
+    writeExamples(list.slice(-3000)); // ponytail: keep the newest 3000; a real store when anyone needs more
+    return ex;
+  });
+  handle('lab:patchExample', (e, id, patch) => {
+    const list = readExamples(), ex = list.find(x => x.id === id);
+    if (!ex) return null;
+    if (patch && 'teacher' in patch) { ex.teacher = str(patch.teacher, 60000); ex.teacherModel = str(patch.teacherModel, 160); }
+    writeExamples(list);
+    return ex;
+  });
+  handle('lab:removeExample', (e, id) => { writeExamples(id === '*' ? [] : readExamples().filter(x => x.id !== id)); return true; });
+  handle('lab:exportKit', (e, o) => exportKit(o));
 
   // ---------- Remote Link ----------
   handle('remote:status', () => remoteStatus());
@@ -434,6 +614,7 @@ else {
     createWindow();
     if (config.remote.enabled && !SMOKE) startRemote();
   });
-  app.on('before-quit', () => remote && remote.stop());
+  app.on('before-quit', () => { quitting = true; if (remote) remote.stop(); });
+  app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => app.quit());
 }

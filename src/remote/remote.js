@@ -112,7 +112,8 @@ const TABS = {
       '<button class="btn" data-cmd="prompter-speed" data-delta="-10">Slower</button><div class="btn" id="c-speed" style="text-align:center"></div><button class="btn" data-cmd="prompter-speed" data-delta="10">Faster</button>' +
       '<button class="btn" data-cmd="prompter-scroll" data-delta="-260">▲ Back</button><button class="btn" data-cmd="stop-sounds">■ Sounds</button><button class="btn" data-cmd="prompter-scroll" data-delta="260">▼ Ahead</button>' +
     '</div></section><section class="card" id="c-live"></section>',
-  sounds: () => '<section class="card"><div class="row between"><h3>Play sounds on</h3><button class="btn" data-cmd="stop-sounds">■ Stop</button></div>' +
+  sounds: () => '<section class="card"><div class="row between"><button class="btn primary" data-cmd="next-sound">▶ Next sound</button><button class="btn" data-cmd="replay-sound">↺ Replay</button></div></section>' +
+    '<section class="card"><div class="row between"><h3>Play sounds on</h3><button class="btn" data-cmd="stop-sounds">■ Stop</button></div>' +
       '<div class="seg"><button id="here-desk">Desktop</button><button id="here-phone">This device</button></div></section>' +
     '<section class="card"><h3>Cues in this script</h3><div id="s-cues" class="sounds"></div></section>' +
     '<section class="card" id="s-lib-card"><h3>My library (plays on desktop)</h3><div id="s-lib" class="sounds"></div></section>' +

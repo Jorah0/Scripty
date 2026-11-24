@@ -9,3 +9,6 @@ android/build/
 android/local.properties
 android/dist/
 android/keystore/
+
+# Claude Code personal settings
+.claude/settings.local.json

@@ -398,3 +398,21 @@ input[type=checkbox] { accent-color: var(--a1); }
 .member .combo { min-width: 0; }
 .mm-foot .hint { white-space: nowrap; }
 .qr.small { width: 170px; height: 170px; }
+
+/* Model Lab */
+.pill.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.lab { max-width: 1400px; }
+.lab .wide { grid-column: 1 / -1; }
+.lab-arch { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.lab #lab-cat-list { max-height: 520px; overflow: auto; }
+.lab .list-row .meta .lab-fit { margin-top: 3px; }
+.lab-bar { height: 5px; margin-top: 5px; background: var(--surface3); border-radius: 99px; overflow: hidden; }
+.lab-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--a1), var(--a2)); transition: width .3s; }
+
+/* Live cue deck, hotkeys, AI sounds */
+kbd { font: 600 10.5px var(--ui); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface3); color: var(--muted); margin-left: 4px; }
+.deck .row.wrap { flex-wrap: wrap; margin: 6px 0; }
+.deck-next { font-size: 13px; margin: 2px 0 4px; }
+.hk-btn { min-width: 90px; justify-content: center; font-family: "Cascadia Code", Consolas, monospace; }
+.gen-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.gen-card .input { flex: 1; }

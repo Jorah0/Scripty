@@ -511,7 +511,95 @@
     { id: 'polish', label: 'Polish', make: (brief, prev, history) => { const p = buildPrompt(brief); return { system: p.system, user: p.user + '\n\nApply this editorial critique to the draft and output the final, polished script.\n\n<draft>\n' + history.draft + '\n</draft>\n\n<critique>\n' + prev + '\n</critique>' }; } },
   ];
 
+  // ---------- sound variation, AI sound recipes, hotkeys ----------
+  /** Per-play randomization: up to ±3 semitones, ±3 dB and 30 ms start jitter at amount 1. Never within 0.3 semitones of `last`. */
+  function soundVariation(amount, last, rnd) {
+    const a = Math.max(0, Math.min(1, Number(amount) || 0));
+    if (!a) return { pitch: 1, gain: 1, offset: 0, semis: 0 };
+    rnd = rnd || Math.random;
+    let semis;
+    for (let i = 0; i < 20; i++) { semis = (rnd() * 2 - 1) * 3 * a; if (!last || Math.abs(semis - last.semis) >= 0.3) break; }
+    if (last && Math.abs(semis - last.semis) < 0.3) semis = last.semis + (last.semis > 0 ? -0.3 : 0.3); // tiny amounts: step away
+    const db = (rnd() * 2 - 1) * 3 * a;
+    return { pitch: Math.pow(2, semis / 12), gain: Math.pow(10, db / 20), offset: rnd() * 0.03 * a, semis };
+  }
+
+  const clampN = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def; };
+  const pick = (v, list) => (list.includes(v) ? v : list[0]);
+  /** Validate an AI-designed synth recipe: unknown values fall back, numbers are clamped, size is capped. */
+  function sanitizeRecipe(o) {
+    if (!o || typeof o !== 'object') throw new Error('The AI reply was not a sound recipe.');
+    const layers = (Array.isArray(o.layers) ? o.layers : []).slice(0, 24).filter(l => l && typeof l === 'object').map(l => {
+      const type = pick(l.type, ['noise', 'tone']), dur = clampN(l.dur, 0.005, 10, 0.3);
+      const x = { type, at: clampN(l.at, 0, 10, 0), dur, repeat: Math.round(clampN(l.repeat, 1, 200, 1)), every: clampN(l.every, 0.003, 5, dur),
+        jitter: clampN(l.jitter, 0, 1, 0), rand: clampN(l.rand, 0, 0.5, 0), freq: clampN(l.freq, 20, 18000, type === 'tone' ? 440 : 1000),
+        q: clampN(l.q, 0.0001, 30, 1), gain: clampN(l.gain, 0, 1.5, 0.4), attack: clampN(l.attack, 0, 8, 0.005), hold: clampN(l.hold, 0, 8, 0),
+        release: clampN(l.release, 0.005, 8, dur) };
+      if (l.freqTo != null) x.freqTo = clampN(l.freqTo, 20, 18000, x.freq);
+      if (type === 'noise') { x.color = pick(l.color, ['white', 'pink', 'brown']); x.filter = pick(l.filter, ['bandpass', 'lowpass', 'highpass']); }
+      else x.wave = pick(l.wave, ['sine', 'square', 'sawtooth', 'triangle']);
+      // Clip repeats that would run past 12 s.
+      x.repeat = Math.max(1, Math.min(x.repeat, Math.floor((12 - x.at - x.dur) / x.every) + 1));
+      return x;
+    });
+    if (!layers.length) throw new Error('The AI recipe had no layers.');
+    let events = 0; // ponytail: cap total scheduled events so a runaway recipe can't stall the audio thread
+    for (const l of layers) { l.repeat = Math.max(1, Math.min(l.repeat, 400 - events)); events += l.repeat; }
+    return { name: String(o.name || 'AI sound').replace(/[\r\n]+/g, ' ').slice(0, 60),
+      keywords: (Array.isArray(o.keywords) ? o.keywords : []).map(k => String(k).toLowerCase().trim()).filter(Boolean).slice(0, 12), layers };
+  }
+  const recipeDuration = r => Math.max(...r.layers.map(l => l.at + (l.repeat - 1) * l.every + l.attack + l.hold + l.release));
+  /** Every balanced top-level {...} in text (string-aware), so an echoed schema or prose can't swallow the real answer. */
+  function jsonObjects(s) {
+    const out = [];
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{') { if (!depth++) start = i; }
+      else if (c === '}' && depth) { if (!--depth) out.push(s.slice(start, i + 1)); }
+    }
+    return out;
+  }
+  function parseSoundRecipe(text) {
+    const found = jsonObjects(String(text || ''));
+    if (!found.length) throw new Error('The AI did not return a sound recipe. Try again or reword the description.');
+    let broken = false;
+    for (const raw of found.reverse()) { // the answer usually comes last
+      let o;
+      try { o = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')); } catch { broken = true; continue; } // tolerate trailing commas
+      if (o && Array.isArray(o.layers) && o.layers.some(l => l && typeof l === 'object')) return sanitizeRecipe(o);
+    }
+    if (broken) throw new Error('The AI returned a broken recipe. Try again.');
+    throw new Error('The AI recipe had no layers.');
+  }
+  function soundRecipePrompt(description) {
+    return {
+      system: 'You are a sound designer for a Web Audio synthesizer. Design the requested sound effect as layered noise and oscillator events. ' +
+        'Reply with ONE JSON object only, no prose: {"name": short title, "keywords": 3-8 lowercase words a script cue might use, "layers": [...]}. ' +
+        'Each layer: {"type":"noise"|"tone", "at": start seconds, "dur": seconds, "repeat": times (1-200), "every": seconds between repeats, ' +
+        '"jitter": random timing spread in seconds, "rand": 0-0.5 random spread of freq and gain per repeat, "freq": Hz, "freqTo": Hz to sweep to, ' +
+        '"gain": 0-1.5, "attack","hold","release": envelope seconds; noise only: "color":"white"|"pink"|"brown", "filter":"bandpass"|"lowpass"|"highpass", "q": 0.1-30; ' +
+        'tone only: "wave":"sine"|"square"|"sawtooth"|"triangle"}. Keep it under 6 seconds and 24 layers. Use many short repeated noise bursts with "rand" for ' +
+        'textures (rain, crackle, applause), filtered noise sweeps for whooshes, and pitched tones with freqTo for beeps, zaps and impacts.',
+      user: 'Sound effect: ' + String(description || '').slice(0, 300),
+    };
+  }
+  /** KeyboardEvent -> Electron accelerator. Plain letters/digits need a modifier so typing never triggers a sound. */
+  function accelFromEvent(e) {
+    const k = e.key;
+    if (!k || ['Control', 'Shift', 'Alt', 'Meta'].includes(k)) return null;
+    const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
+    const named = { ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Escape: 'Esc' };
+    const key = named[k] || (/^F\d{1,2}$/.test(k) || /^(Insert|Delete|Home|End|PageUp|PageDown|Pause|Tab|Enter|Backspace)$/.test(k) ? k : k.length === 1 ? k.toUpperCase() : null);
+    if (!key) return null;
+    if (!mods.length && !/^(F\d{1,2}|Insert|Delete|Home|End|PageUp|PageDown|Pause)$/.test(key)) return null;
+    return [...mods, key].join('+');
+  }
+
   const ScriptKit = {
+    soundVariation, sanitizeRecipe, recipeDuration, parseSoundRecipe, soundRecipePrompt, accelFromEvent,
     SCRIPT_TYPES, TONES, MODES, UNITS, BUILTIN_SOUNDS, ASSIST_ACTIONS, TOOL_ACTIONS, RELAY_STAGES,
     typeOf, lengthPlan, adviseLength, fmtTime, parseCues, matchSound, analyzeScript, readingLevel, countWords,
     buildPrompt, buildAssistPrompt, buildToolPrompt, synthesisPrompt, judgePrompt, parseWinner,

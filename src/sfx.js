@@ -1,7 +1,8 @@
 /* Scripty sound engine: procedural Web Audio sound effects (no audio files needed) + user audio library playback. */
 (function (root) {
   'use strict';
-  let ctx = null, master = null, volume = 0.8;
+  let ctx = null, master = null, out = null, pf = 1, volume = 0.8, vary = 0.5; // out/pf: the current play's variation bus and pitch factor
+  const lastVar = {};
   const noiseBufs = {};
   const playingAudio = new Set();
   const R = (a, b) => a + Math.random() * (b - a);
@@ -11,7 +12,7 @@
     if (ctx.state === 'suspended') ctx.resume();
     return ctx;
   }
-  function newMaster() { master = ctx.createGain(); master.gain.value = volume; master.connect(ctx.destination); }
+  function newMaster() { master = out = ctx.createGain(); master.gain.value = volume; master.connect(ctx.destination); }
 
   function noiseBuffer(kind) {
     if (noiseBufs[kind]) return noiseBufs[kind];
@@ -44,11 +45,11 @@
     src.buffer = noiseBuffer(o.color || 'white'); src.loop = true;
     const f = ctx.createBiquadFilter();
     f.type = o.filter || 'bandpass';
-    f.frequency.setValueAtTime(o.freq || 1000, t);
-    if (o.freqTo) f.frequency.exponentialRampToValueAtTime(o.freqTo, t + dur);
+    f.frequency.setValueAtTime(Math.min(20000, (o.freq || 1000) * pf), t);
+    if (o.freqTo) f.frequency.exponentialRampToValueAtTime(Math.min(20000, o.freqTo * pf), t + dur);
     f.Q.value = o.q != null ? o.q : 1;
     const g = env(t, o.attack != null ? o.attack : 0.005, o.gain != null ? o.gain : 0.5, o.release != null ? o.release : dur, o.hold);
-    src.connect(f); f.connect(g); g.connect(master);
+    src.connect(f); f.connect(g); g.connect(out);
     src.start(t, Math.random() * 3); src.stop(endOf(t, o, dur));
   }
 
@@ -57,13 +58,13 @@
     t = Math.max(t, ctx.currentTime);
     const osc = ctx.createOscillator();
     osc.type = o.wave || 'sine';
-    osc.frequency.setValueAtTime(o.freq || 440, t);
-    if (o.freqTo) osc.frequency.exponentialRampToValueAtTime(o.freqTo, t + (o.sweep || dur));
+    osc.frequency.setValueAtTime((o.freq || 440) * pf, t);
+    if (o.freqTo) osc.frequency.exponentialRampToValueAtTime(o.freqTo * pf, t + (o.sweep || dur));
     if (o.detune) osc.detune.value = o.detune;
     let node = osc;
     if (o.lp) { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = o.lp; osc.connect(f); node = f; }
     const g = env(t, o.attack != null ? o.attack : 0.005, o.gain != null ? o.gain : 0.3, o.release != null ? o.release : dur, o.hold);
-    node.connect(g); g.connect(master);
+    node.connect(g); g.connect(out);
     osc.start(t); osc.stop(endOf(t, o, dur));
   }
 
@@ -88,7 +89,7 @@
     door(t) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(90, t);
       for (let i = 1; i <= 12; i++) o.frequency.linearRampToValueAtTime(R(70, 160), t + i * 0.12);
       const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1100; f.Q.value = 6;
-      const g = env(t, 0.1, 0.35, 0.5, 1.0); o.connect(f); f.connect(g); g.connect(master); o.start(t); o.stop(t + 1.7);
+      const g = env(t, 0.1, 0.35, 0.5, 1.0); o.connect(f); f.connect(g); g.connect(out); o.start(t); o.stop(t + 1.7);
       nz(t + 1.55, 0.3, { color: 'brown', filter: 'lowpass', freq: 300, gain: 1.1, release: 0.35 }); return 2; },
     footsteps(t) { for (let i = 0; i < 6; i++) { const s = t + i * 0.45 + R(-0.03, 0.03);
       nz(s, 0.12, { color: 'brown', filter: 'lowpass', freq: 500, gain: 1, release: 0.12 }); nz(s + 0.02, 0.06, { filter: 'highpass', freq: 2500, gain: 0.12, release: 0.06 }); } return 2.8; },
@@ -109,7 +110,7 @@
     phone(t) { for (let r = 0; r < 2; r++) { const s = t + r * 1.1;
       const lfo = ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.value = 20;
       const am = ctx.createGain(); am.gain.value = 0.5; const lg = ctx.createGain(); lg.gain.value = 0.5; lfo.connect(lg); lg.connect(am.gain);
-      const g = env(s, 0.01, 0.25, 0.05, 0.8); am.connect(g); g.connect(master);
+      const g = env(s, 0.01, 0.25, 0.05, 0.8); am.connect(g); g.connect(out);
       for (const f of [440, 480]) { const o = ctx.createOscillator(); o.frequency.value = f; o.connect(am); o.start(s); o.stop(s + 0.9); }
       lfo.start(s); lfo.stop(s + 0.9); } return 2.1; },
     camera(t) { nz(t, 0.04, { filter: 'bandpass', freq: 3000, q: 1, gain: 0.9, release: 0.04 }); nz(t + 0.09, 0.06, { filter: 'bandpass', freq: 1800, q: 1, gain: 0.7, release: 0.06 }); return 0.3; },
@@ -136,7 +137,7 @@
       o.frequency.linearRampToValueAtTime(75, t + 1.5); o.frequency.linearRampToValueAtTime(55, t + 3);
       const lfo = ctx.createOscillator(); lfo.frequency.value = 9; const lg = ctx.createGain(); lg.gain.value = 4; lfo.connect(lg); lg.connect(o.frequency);
       const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 380;
-      const g = env(t, 0.4, 0.35, 0.6, 2); o.connect(f); f.connect(g); g.connect(master);
+      const g = env(t, 0.4, 0.35, 0.6, 2); o.connect(f); f.connect(g); g.connect(out);
       o.start(t); lfo.start(t); o.stop(t + 3.1); lfo.stop(t + 3.1); return 3.1; },
     drumroll(t) { let s = t; for (let i = 0; i < 48; i++) { nz(s, 0.05, { filter: 'bandpass', freq: 1800, q: 0.8, gain: 0.25 + i * 0.008, release: 0.05 }); s += Math.max(0.035, 0.07 - i * 0.001); }
       nz(s, 1.8, { filter: 'highpass', freq: 5000, q: 0.5, gain: 0.6, release: 1.8 }); tone(s, 0.3, { freq: 120, freqTo: 60, gain: 0.6, release: 0.3 }); return s - t + 1.8; },
@@ -153,10 +154,23 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   function fileUrl(p) { return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23').replace(/\?/g, '%3F'); }
 
-  function playFile(entry, maxSeconds) {
+  // AI-designed recipe (validated by ScriptKit.sanitizeRecipe): layers of repeated noise/tone events with per-hit randomness.
+  function playRecipe(r, t) {
+    for (const l of r.layers) for (let k = 0; k < l.repeat; k++) {
+      const spread = () => 1 + (Math.random() * 2 - 1) * (l.rand || 0);
+      const o = { ...l, freq: l.freq * spread(), gain: l.gain * spread() };
+      if (l.freqTo) o.freqTo = l.freqTo * spread();
+      const at = t + l.at + k * l.every + (Math.random() * 2 - 1) * (l.jitter || 0);
+      (l.type === 'tone' ? tone : nz)(at, l.dur, o);
+    }
+    return root.ScriptKit.recipeDuration(r);
+  }
+
+  function playFile(entry, maxSeconds, v) {
     return new Promise(resolve => {
       const a = new Audio(fileUrl(entry.path));
-      a.volume = Math.min(1, volume * (entry.volume || 1));
+      a.volume = Math.min(1, volume * (entry.volume || 1) * v.gain);
+      a.preservesPitch = false; a.playbackRate = v.pitch; // varispeed: pitch and length shift together, like a tape
       playingAudio.add(a);
       let timer = null;
       const done = () => { clearTimeout(timer); playingAudio.delete(a); resolve(); };
@@ -169,15 +183,23 @@
   const Sound = {
     has: id => !!RECIPES[id],
     /** Play a built-in sound id or a library entry. Resolves when it finishes (capped at maxSeconds). */
+    /** Every play is a fresh random variant (pitch, level, start), never the same as the previous play of that sound. */
     play(target, maxSeconds) {
-      if (target && typeof target === 'object' && target.path) return playFile(target, maxSeconds);
       const id = typeof target === 'object' && target ? target.id : target;
-      const recipe = RECIPES[id];
-      if (!recipe) return Promise.resolve();
+      const v = lastVar[id] = root.ScriptKit.soundVariation(vary, lastVar[id]);
+      if (target && typeof target === 'object' && target.path) return playFile(target, maxSeconds, v);
+      const custom = target && typeof target === 'object' && target.recipe, recipe = RECIPES[id];
+      if (!custom && !recipe) return Promise.resolve();
       ac();
-      const dur = recipe(ctx.currentTime + 0.02);
+      const bus = ctx.createGain(); bus.gain.value = v.gain; bus.connect(master);
+      out = bus; pf = v.pitch;
+      let dur;
+      try { const t = ctx.currentTime + 0.02 + v.offset; dur = custom ? playRecipe(custom, t) : recipe(t); }
+      finally { out = master; pf = 1; }
       return sleep(Math.min(dur, maxSeconds || dur) * 1000);
     },
+    setVariation(a) { vary = Math.max(0, Math.min(1, Number(a) || 0)); },
+    lastVariation: id => lastVar[id] || null,
     /** Match a cue label to a sound and play it. Returns { sound, done } or null when nothing matches. */
     playCue(label, library, override, maxSeconds) {
       const K = root.ScriptKit;
@@ -191,7 +213,7 @@
     stopAll() {
       for (const a of playingAudio) a.pause();
       playingAudio.clear();
-      if (ctx && master) { master.disconnect(); newMaster(); } // orphan every scheduled node at once
+      if (ctx && master) { master.disconnect(); newMaster(); } // orphan every scheduled node (and every variation bus) at once
     },
     selfTest() { ac(); const v = volume; Sound.setVolume(0); for (const id of Object.keys(RECIPES)) RECIPES[id](ctx.currentTime + 0.01); Sound.stopAll(); Sound.setVolume(v); return Object.keys(RECIPES).length; },
     ids: () => Object.keys(RECIPES),

@@ -81,3 +81,41 @@ test('buildPrompt carries every brief field the user set', () => {
   assert.match(p.user, /\d+ words/);
   assert.match(p.system, /\[SFX:/, 'SFX cue convention is taught when SFX enabled');
 });
+
+test('sound variation: identity at 0, bounded, and never repeats the previous variant', () => {
+  assert.deepEqual(K.soundVariation(0), { pitch: 1, gain: 1, offset: 0, semis: 0 });
+  let last = null;
+  for (let i = 0; i < 300; i++) {
+    const v = K.soundVariation(1, last);
+    assert.ok(v.pitch > 0.83 && v.pitch < 1.2 && v.gain > 0.7 && v.gain < 1.42 && v.offset >= 0 && v.offset <= 0.03, JSON.stringify(v));
+    if (last) assert.ok(Math.abs(v.semis - last.semis) >= 0.3, 'two plays in a row must differ audibly');
+    last = v;
+  }
+});
+
+test('AI sound recipes are parsed from chatty replies and clamped to safe limits', () => {
+  const r = K.parseSoundRecipe('Here you go:\n```json\n{"name":"Laser Zap","keywords":["laser","zap","pew"],"layers":[' +
+    '{"type":"tone","wave":"sawtooth","freq":99999,"freqTo":200,"dur":0.3,"gain":9,"repeat":5000,"every":0.1},' +
+    '{"type":"noise","color":"plasma","filter":"evil","freq":3000,"dur":0.2}]}\n```');
+  assert.equal(r.name, 'Laser Zap');
+  assert.deepEqual(r.keywords, ['laser', 'zap', 'pew']);
+  const [a, b] = r.layers;
+  assert.equal(a.freq, 18000); assert.equal(a.gain, 1.5); assert.ok(a.repeat <= 200);
+  assert.equal(b.color, 'white'); assert.equal(b.filter, 'bandpass');
+  assert.ok(K.recipeDuration(r) <= 12);
+  // Small local models echo the schema before answering, and leave trailing commas.
+  const echoed = K.parseSoundRecipe('Format: {"name": "...", "layers": [...]}\n\n{"name":"Coins","keywords":["coins",],"layers":[{"type":"tone","freq":3000,"dur":0.1,},]}');
+  assert.equal(echoed.name, 'Coins'); assert.equal(echoed.layers.length, 1);
+  assert.equal(K.parseSoundRecipe('{"note":"a } in a string","name":"Q","layers":[{"type":"noise"}]}').name, 'Q');
+  assert.throws(() => K.parseSoundRecipe('no json here'));
+  assert.throws(() => K.parseSoundRecipe('{"name":"x","layers":[]}'), /no layers/);
+  assert.ok(K.soundRecipePrompt('sci-fi door hiss').user.includes('sci-fi door hiss'));
+});
+
+test('hotkeys: keyboard events become Electron accelerators', () => {
+  assert.equal(K.accelFromEvent({ key: 'F9' }), 'F9');
+  assert.equal(K.accelFromEvent({ key: 'n', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+N');
+  assert.equal(K.accelFromEvent({ key: ' ', altKey: true }), 'Alt+Space');
+  assert.equal(K.accelFromEvent({ key: 'Control', ctrlKey: true }), null, 'a bare modifier is not a hotkey');
+  assert.equal(K.accelFromEvent({ key: 'n' }), null, 'a plain letter would break typing');
+});

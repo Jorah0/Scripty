@@ -124,6 +124,8 @@ function withDefaults(s) {
   const e = defaultEngine();
   s.engine = { ...e, ...(s.engine || {}), relay: { ...e.relay, ...((s.engine || {}).relay || {}) } };
   if (s.autoApply == null) s.autoApply = true;
+  if (s.sfxVary == null) s.sfxVary = 0.5;
+  s.hotkeys = { next: 'F9', replay: 'F8', stop: 'F10', global: false, ...(s.hotkeys || {}) };
   return s;
 }
 
@@ -253,6 +255,7 @@ function applySettings() {
   root.style.setProperty('--editor-font', (FONTS[s.editorFont] || FONTS.sans)[1]);
   root.style.setProperty('--editor-size', (Number(s.editorSize) || 16) + 'px');
   Sound.setVolume(s.sfxVolume);
+  Sound.setVariation(s.sfxVary);
   $('#read-rate').value = s.readRate || 1;
   $('#read-sfx').checked = !!s.readSfx;
   $('#view-studio').classList.toggle('no-brief', !!s.hideBrief);
@@ -763,6 +766,8 @@ function addLane(r, member, role) {
 async function runLane(r, lane, prompt) {
   if (r.cancelled) { lane.status = 'cancelled'; return null; }
   lane.status = 'running'; lane.reqId = uid(); r.activeLane = lane.id;
+  lanePrompts.set(lane.id, prompt);
+  if (lanePrompts.size > 300) lanePrompts.delete(lanePrompts.keys().next().value);
   renderToolIf('runs');
   try {
     const text = await callAI(lane, prompt.system, prompt.user, t => { lane.text += t; laneUpdated(lane); }, lane.reqId);
@@ -892,6 +897,7 @@ function applyLane(r, lane, how) {
   else if (how === 'insert') { snapId = snapshot('Before insert', true); insertAtCursor(text); }
   else snapId = replaceEditor(text, 'Before ' + r.title);
   r.applied = lane.id;
+  if (state.lab.autoLearn) learn(r, lane);
   toast('Script updated from ' + pname(lane.provider), 'ok', { label: 'Undo', fn: () => undoTo(snapId) });
 }
 async function assist(instruction, label, wholeOnly) {
@@ -915,6 +921,7 @@ async function assist(instruction, label, wholeOnly) {
   if (hasSel && editor().value.slice(s, e) === passage) { snapId = replaceRange(s, e, text, 'Before ' + label); r.applied = lane.id; }
   else if (!hasSel && editor().value === whole) { snapId = replaceEditor(text, 'Before ' + label); r.applied = lane.id; }
   else return toast('The script changed while the AI was working, so nothing was replaced. Use the result in AI Runs.', 'err');
+  if (state.lab.autoLearn) learn(r, lane);
   toast(label + ' applied', 'ok', { label: 'Undo', fn: () => undoTo(snapId) });
 }
 async function runTool(key, extra) {
@@ -976,7 +983,7 @@ function runCard(r) {
   const btn = (act, label, icon, cls) => '<button class="btn sm ' + (cls || '') + '" data-action="' + act + '" data-run="' + r.id + '" data-lane="' + active.id + '">' + (icon ? ic(icon) : '') + label + '</button>';
   const actions = active.status === 'done' && active.text ? '<div class="lane-actions">' +
     (r.kind !== 'tool' ? btn('lane-use', r.applied === active.id ? 'Applied' : 'Use in editor', 'check', 'primary') + btn('lane-insert', 'Insert at cursor') + btn('lane-append', 'Append') : btn('lane-insert', 'Insert at cursor')) +
-    btn('lane-copy', 'Copy', 'copy', 'ghost') + '</div>' : '';
+    btn('lane-copy', 'Copy', 'copy', 'ghost') + (lanePrompts.has(active.id) ? btn('lane-teach', 'Teach', 'bulb', 'ghost') : '') + '</div>' : '';
   return '<div class="run"><div class="run-head">' + statusPill(r.status) + '<b>' + esc(r.title) + '</b>' + (r.strategy ? '<span class="pill">' + esc(r.strategy) + '</span>' : '') +
     '<span class="when">' + timeAgo(r.createdAt) + '</span>' +
     (r.status === 'running' ? '<button class="btn sm stop" data-action="cancel-run" data-run="' + r.id + '">' + ic('stop') + 'Stop</button>' : '<button class="icon-btn" data-action="rm-run" data-run="' + r.id + '" title="Remove">' + ic('x') + '</button>') + '</div>' +
@@ -1041,10 +1048,11 @@ function soundOptions(sel) {
 function renderCuesTool(body) {
   const seen = new Set();
   const cues = state.analysis.cues.filter(c => c.kind !== 'pause' && !seen.has(c.label.toLowerCase()) && seen.add(c.label.toLowerCase()));
-  body.innerHTML = '<div class="tool-section"><h4>' + ic('wave') + 'Cues in this script (' + cues.length + ')</h4>' +
+  body.innerHTML = deckHTML() + '<div class="tool-section"><h4>' + ic('wave') + 'Cues in this script (' + cues.length + ')</h4>' +
     (cues.length ? cues.map(c => { const m = cueMatch(c.label); const ov = state.project.sfxOverrides[c.label.toLowerCase()] || '';
       return '<div class="list-row"><button class="round-play" data-action="play-cue" data-label="' + esc(c.label) + '" title="Play">' + ic('play') + '</button>' +
         '<div class="meta"><b>' + (c.kind === 'music' ? 'MUSIC: ' : '') + esc(c.label) + '</b><span>' + (m ? '→ ' + esc(m.name) : '<span style="color:var(--warn)">No match</span>') + '</span></div>' +
+        (m ? '' : '<button class="btn sm" data-action="gen-cue" data-label="' + esc(c.label) + '" title="Have your AI design this sound">' + ic('sparkles') + 'AI</button>') +
         '<select class="input" style="width:130px" data-override="' + esc(c.label.toLowerCase()) + '">' + soundOptions(ov) + '</select></div>'; }).join('') +
       '<button class="btn sm" data-action="play-all-cues" style="margin-top:4px">' + ic('play') + 'Play all in order</button>'
       : '<div class="hint">No [SFX: …] or [MUSIC: …] cues yet. Turn on “Sound effect cues” in the brief, use Assist → Add SFX cues, or insert them from the board below.</div>') + '</div>' +
@@ -1071,6 +1079,7 @@ async function setView(v) {
   if (v === 'providers') renderProviders();
   if (v === 'settings') renderSettings();
   if (v === 'remote') { renderRemote(); refreshRemoteStatus(); }
+  if (v === 'lab') openLab();
   if (v !== 'studio') stopRead();
 }
 async function renderProjects() {
@@ -1123,6 +1132,12 @@ function renderSettings() {
       '<div class="field"><label>Accent</label><div class="swatches">' + Object.entries(ACCENTS).map(([k, c]) => '<span class="swatch ' + (s.accent === k ? 'on' : '') + '" data-action="set-accent" data-v="' + k + '" style="background:linear-gradient(135deg,' + c[0] + ',' + c[1] + ')" title="' + k + '"></span>').join('') + '</div></div>' +
       '<div class="two"><div class="field"><label>Editor font</label><select class="input" data-bind="S:editorFont" data-apply>' + Object.entries(FONTS).map(([k, [l]]) => '<option value="' + k + '"' + (s.editorFont === k ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></div>' +
       '<div class="field"><label>Editor text size</label><input class="input" type="number" min="12" max="28" data-bind="S:editorSize" data-type="number" data-apply value="' + s.editorSize + '"></div></div></div>' +
+    '<div class="card"><h3>' + ic('keyboard') + 'Sound hotkeys &amp; variation</h3>' +
+      ['next', 'replay', 'stop'].map(a => '<div class="switch-row"><div>' + { next: 'Play the next cue', replay: 'Replay the last cue', stop: 'Stop all sounds' }[a] + '</div>' +
+        '<button class="btn sm hk-btn" data-action="hk-capture" data-a="' + a + '">' + hkLabel(a) + '</button></div>').join('') +
+      '<div class="switch-row"><div><div>Work in other apps</div><div class="hint">The keys fire even while OBS, a game or your browser has focus.</div></div><label class="switch"><input type="checkbox" id="hk-global"' + (s.hotkeys.global ? ' checked' : '') + '><span></span></label></div>' +
+      '<div class="field"><label>Variation per play <span class="aside">' + Math.round(s.sfxVary * 100) + '%</span></label><input type="range" min="0" max="1" step="0.05" data-bind="S:sfxVary" data-type="number" data-apply value="' + s.sfxVary + '">' +
+        '<div class="hint">Pitch, level and timing shift a little on every play, so repeats never sound identical. 0% plays the exact same sound each time.</div></div></div>' +
     '<div class="card"><h3>' + ic('sparkles') + 'AI generation</h3>' +
       '<div class="field"><label>Creativity (temperature) <span class="aside" id="temp-out">' + s.temperature + '</span></label><input type="range" min="0" max="1.5" step="0.05" data-bind="S:temperature" data-type="number" value="' + s.temperature + '"></div>' +
       '<div class="field"><label>Max output length</label><select class="input" data-bind="S:maxTokens" data-type="number">' + [2048, 4096, 8192, 16000, 32000, 64000].map(n => '<option value="' + n + '"' + (Number(s.maxTokens) === n ? ' selected' : '') + '>' + n.toLocaleString() + ' tokens (≈ ' + Math.round(n * 0.75).toLocaleString() + ' words)</option>').join('') + '</select><div class="hint">Scripts over ~30 minutes need 16k or more. Some models cap lower.</div></div>' +
@@ -1131,6 +1146,9 @@ function renderSettings() {
       '<div class="field"><label>Table-read speed <span class="aside">' + s.readRate + '×</span></label><input type="range" min="0.6" max="1.6" step="0.1" data-bind="S:readRate" data-type="number" data-apply value="' + s.readRate + '"></div>' +
       sw('readSfx', 'Play sound cues during the table read') +
       '<div class="field"><label>Sound effect volume</label><input type="range" min="0" max="1" step="0.05" data-bind="S:sfxVolume" data-type="number" value="' + s.sfxVolume + '"></div></div>' +
+    '<div class="card"><h3>' + ic('monitor') + 'Window & startup</h3>' +
+      sw('minimizeOnClose', 'Minimize to the taskbar when closed', 'The X button keeps Scripty running. To quit, right-click it in the taskbar and choose Close window.') +
+      sw('openAtLogin', 'Start Scripty when Windows starts', 'Opens minimized in the taskbar.') + '</div>' +
     '<div class="card"><h3>' + ic('file') + 'Defaults</h3><div class="field"><label>Script type for new projects</label><select class="input" data-bind="S:defaultType">' + typeOptions(s.defaultType) + '</select></div>' +
       '<div class="hint">Tip: the brief keeps a separate speaking rate (WPM) per project, so you can match your own delivery.</div></div>' +
     '<div class="card"><h3>' + ic('key') + 'Privacy & data</h3><div class="hint">Projects, settings and your sound library are stored on this computer:</div><code>' + esc(state.info.dataDir) + '</code>' +
@@ -1434,6 +1452,7 @@ function bindEvents() {
   document.addEventListener('input', e => {
     const el = e.target;
     if (el.dataset.bind) onBind(el);
+    else if (el.dataset.lab) { if (el.tagName !== 'SELECT' && el.type !== 'checkbox') labInput(el, false); }
     else if (el.dataset.pbind) saveProviderField(el);
     else if (el.id === 'editor') onEditorInput();
     else if (el.id === 'project-title') { markDirty(); }
@@ -1449,6 +1468,8 @@ function bindEvents() {
     const el = e.target;
     if (el.dataset.override != null) { if (el.value) state.project.sfxOverrides[el.dataset.override] = el.value; else delete state.project.sfxOverrides[el.dataset.override]; markDirty(); renderTool(); if (state.editorMode === 'perform') renderPerform(); }
     else if (el.dataset.lib) saveLibField(el);
+    else if (el.dataset.lab && (el.tagName === 'SELECT' || el.type === 'checkbox')) labInput(el, true);
+    else if (el.id === 'hk-global') { state.settings.hotkeys.global = el.checked; saveSettings(); applyHotkeys(); }
     else if (el.id === 'read-sfx') { state.settings.readSfx = el.checked; saveSettings(); }
     else if (el.id === 'remote-on') {
       api.remoteEnable(el.checked).then(s => { state.remote = s; lastRemoteJSON = ''; $('#remote-dot').classList.toggle('hidden', !s.running); renderRemote(); pushRemote(); })
@@ -1458,6 +1479,16 @@ function bindEvents() {
   const ed = editor();
   ['select', 'keyup', 'mouseup'].forEach(ev => ed.addEventListener(ev, () => renderStatus()));
   document.addEventListener('keydown', e => {
+    if (hkCapture) {
+      e.preventDefault();
+      const acc = e.key === 'Escape' ? null : K.accelFromEvent(e);
+      if (e.key !== 'Escape' && !acc) return toast('Use an F-key, or hold Ctrl/Alt/Shift with a letter so typing never fires a sound.');
+      if (acc) { state.settings.hotkeys[hkCapture] = acc; saveSettings(); applyHotkeys(); }
+      hkCapture = null; renderSettings(); renderToolIf('cues'); return;
+    }
+    const acc = K.accelFromEvent(e), hk = state.settings.hotkeys;
+    const act = acc && (!hk.global || hkFailed.includes(acc)) && ['next', 'replay', 'stop'].find(a => hk[a] === acc); // global keys arrive via onHotkey instead
+    if (act) { e.preventDefault(); runHotkey(act); return; }
     if (!$('#prompter').classList.contains('hidden')) {
       if (e.key === 'Escape') closePrompter();
       else if (e.key === ' ') { e.preventDefault(); prompterToggle(); }
@@ -1497,6 +1528,342 @@ async function saveLibField(el) {
   s[f] = f === 'keywords' ? el.value.split(',').map(x => x.trim()).filter(Boolean) : f === 'volume' ? Number(el.value) : el.value;
   state.sfxLib = await api.sfxUpdate(s);
 }
+
+// ================= live cue deck: next-cue hotkey, replay, recorded timing =================
+const deck = { i: 0, last: -1, rec: null, t0: 0, timers: [] };
+let hkCapture = null, hkFailed = [];
+const deckCues = () => state.analysis.cues.filter(c => c.kind !== 'pause');
+function deckPlay(idx) {
+  const c = deckCues()[idx];
+  if (!c) return;
+  deck.last = idx;
+  if (deck.rec) deck.rec.push({ label: c.label, t: Math.round(performance.now() - deck.t0) / 1000 });
+  playCueLabel(c.label); // Sound.play makes every hit a fresh variation
+  renderDeck();
+}
+function deckNext() {
+  const n = deckCues().length;
+  if (!n) return toast('No [SFX: …] cues in this script yet.');
+  if (deck.i >= n) { deck.i = 0; toast('Back to the first cue.'); }
+  deckPlay(deck.i++);
+}
+function deckReplay() { if (deck.last >= 0 && deck.last < deckCues().length) deckPlay(deck.last); else deckNext(); }
+function deckStop() { deck.timers.forEach(clearTimeout); deck.timers = []; Sound.stopAll(); renderDeck(); }
+function runHotkey(a) { if (a === 'next') deckNext(); else if (a === 'replay') deckReplay(); else if (a === 'stop') deckStop(); }
+const hkLabel = a => esc((state.settings.hotkeys || {})[a] || '—');
+function deckHTML() {
+  const cues = deckCues(), next = cues[deck.i], timing = state.project.cueTiming || [];
+  return '<div class="tool-section deck" id="deck-box"><h4>' + ic('zap') + 'Live cue deck</h4>' +
+    '<div class="deck-next">' + (cues.length ? 'Next: <b>' + esc(next ? next.label : 'back to the first cue') + '</b> <span class="hint">' + Math.min(deck.i + 1, cues.length) + ' / ' + cues.length + '</span>' : '<span class="hint">No cues yet.</span>') + '</div>' +
+    '<div class="row gap wrap"><button class="btn sm primary" data-action="deck-next">' + ic('play') + 'Next <kbd>' + hkLabel('next') + '</kbd></button>' +
+      '<button class="btn sm" data-action="deck-replay">' + ic('refresh') + 'Replay <kbd>' + hkLabel('replay') + '</kbd></button>' +
+      '<button class="btn sm ghost" data-action="deck-stop">' + ic('stop') + 'Stop <kbd>' + hkLabel('stop') + '</kbd></button>' +
+      '<button class="btn sm ghost" data-action="deck-reset" title="Start again from the first cue">' + ic('history') + 'Restart</button></div>' +
+    '<div class="row gap wrap"><button class="btn sm' + (deck.rec ? ' danger' : '') + '" data-action="deck-rec">' + ic(deck.rec ? 'stop' : 'mic') + (deck.rec ? 'Stop recording (' + deck.rec.length + ' presses)' : 'Record timing') + '</button>' +
+      (timing.length ? '<button class="btn sm" data-action="deck-play-timed">' + ic('timer') + 'Play timed · ' + timing.length + ' cues over ' + (Number(timing[timing.length - 1].t) || 0).toFixed(1) + 's</button>' : '') + '</div>' +
+    '<div class="hint">Every press plays a new variation of the sound. Record timing remembers when you pressed Next; Play timed fires the same cues on the same beats.</div></div>';
+}
+function renderDeck() { const el = $('#deck-box'); if (el) el.outerHTML = deckHTML(); }
+function applyHotkeys() {
+  return api.setHotkeys(state.settings.hotkeys).then(r => {
+    hkFailed = r.failed;
+    if (r.failed.length) toast('Could not use ' + r.failed.join(', ') + ' system-wide (another app has it). It still works inside Scripty.', 'err');
+  });
+}
+
+async function generateSound(desc, btn) {
+  desc = String(desc || '').trim();
+  if (!desc) return toast('Describe the sound first.');
+  const m = primaryMember();
+  if (!checkReady([m])) return;
+  const out = $('#gen-out');
+  if (btn) btn.disabled = true;
+  if (out) out.innerHTML = '<span class="spinner"></span> ' + esc(pname(m.provider)) + ' is designing “' + esc(desc) + '”…';
+  try {
+    const p = K.soundRecipePrompt(desc);
+    const ask = () => callAI(m, p.system, p.user, null, null, { temperature: 0.7, maxTokens: 4000 });
+    let recipe;
+    try { recipe = K.parseSoundRecipe(await ask()); }
+    catch { if (out) out.innerHTML = '<span class="spinner"></span> That design came back garbled — asking again…'; recipe = K.parseSoundRecipe(await ask()); } // small models: one retry
+    // The description's own words always match, so a cue that asked for this sound finds it.
+    recipe.keywords = [...new Set([...desc.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2), ...recipe.keywords])].slice(0, 12);
+    Sound.play({ id: 'ai-preview', recipe });
+    state.sfxLib = await api.sfxAddGenerated(recipe, desc);
+    if (state.view === 'sounds') renderSounds();
+    renderToolIf('cues');
+    if (out) out.innerHTML = 'Added <b>' + esc(recipe.name) + '</b> to your library · keywords: ' + esc(recipe.keywords.join(', '));
+    toast('AI sound “' + recipe.name + '” added to your library', 'ok');
+  } catch (e) { if (out) out.textContent = cleanErr(e); toast(cleanErr(e), 'err'); }
+  finally { if (btn) btn.disabled = false; }
+}
+Object.assign(ACTIONS, {
+  'deck-next': () => deckNext(), 'deck-replay': () => deckReplay(), 'deck-stop': () => deckStop(),
+  'deck-reset': () => { deck.i = 0; deck.last = -1; renderDeck(); },
+  'deck-rec': () => {
+    if (deck.rec) {
+      if (deck.rec.length) { state.project.cueTiming = deck.rec; markDirty(); toast('Saved timing for ' + deck.rec.length + ' cues', 'ok'); }
+      deck.rec = null;
+    } else { deckStop(); deck.i = 0; deck.last = -1; deck.rec = []; deck.t0 = performance.now(); toast('Recording — press Next (' + (state.settings.hotkeys.next || 'button') + ') on each beat.'); }
+    renderDeck();
+  },
+  'deck-play-timed': () => {
+    deckStop();
+    for (const m of state.project.cueTiming || []) deck.timers.push(setTimeout(() => playCueLabel(m.label), Math.max(0, Number(m.t) || 0) * 1000));
+    toast('Playing your recorded timing. Stop ends it.');
+  },
+  'gen-sound': el => generateSound($('#gen-q').value, el),
+  'gen-cue': el => generateSound(el.dataset.label, el),
+  'hk-capture': el => { hkCapture = el.dataset.a; el.textContent = 'Press a key… (Esc cancels)'; },
+});
+
+// ================= Model Lab =================
+const ML = window.ModelLab;
+const LAB_PROFILES = { idle: ['Idle (nothing else running)', 0], obs: ['OBS live / streaming', 3], gaming: ['Gaming', 6], custom: ['Custom reserve', null] };
+const LAB_DEFAULTS = { profile: { source: 'local', preset: 'idle', reserveGiB: 0, manual: { host: '', totalGiB: 24, freeGiB: 22, ramGiB: 64 } },
+  workload: { context: 4096, concurrency: 1 }, route: 'scratch', design: { ...ML.PRESETS.proof }, base: 'Qwen/Qwen2.5-1.5B-Instruct', loraRank: 16, tokenizer: 'new',
+  name: 'my-scripty-model', epochs: 3, teacher: { provider: 'anthropic', model: '' }, autoLearn: false, filters: { q: '', fitOnly: false, installedOnly: false } };
+function withLabDefaults(s) {
+  const d = LAB_DEFAULTS, p = (s && s.profile) || {};
+  s = s || {};
+  return { ...d, ...s, profile: { ...d.profile, ...p, manual: { ...d.profile.manual, ...(p.manual || {}) } }, workload: { ...d.workload, ...(s.workload || {}) },
+    design: { ...d.design, ...(s.design || {}) }, teacher: { ...d.teacher, ...(s.teacher || {}) }, filters: { ...d.filters, ...(s.filters || {}) } };
+}
+const lab = { hw: null, catalog: null, sources: [], examples: null, loading: false, pull: null };
+const saveLab = debounce(() => api.labSet(state.lab), 400);
+const fmtParams = n => (n >= 1e9 ? (n / 1e9).toFixed(1) + 'B' : Math.max(1, Math.round(n / 1e6)) + 'M');
+const gib = x => (Math.round(x * 10) / 10) + ' GiB';
+/** The machine the model will run on: this PC's largest NVIDIA GPU, or a manual profile for another machine on the network. */
+function labHW() {
+  const p = state.lab.profile;
+  if (p.source === 'manual') { const m = p.manual; return { totalGiB: Number(m.totalGiB) || 0, freeGiB: Number(m.freeGiB) || 0, budgetGiB: ML.effectiveBudget(m.freeGiB, p.reserveGiB), label: m.host || 'Other machine' }; }
+  // ponytail: one GPU (the largest); splitting a model across GPUs depends on the backend, so capacity is never summed.
+  const g = lab.hw && [...lab.hw.gpus].sort((a, b) => b.totalGiB - a.totalGiB)[0];
+  if (!g) return { totalGiB: 0, freeGiB: 0, budgetGiB: 0, label: lab.hw ? 'No NVIDIA GPU detected' : 'Scanning…' };
+  return { totalGiB: g.totalGiB, freeGiB: g.freeGiB, budgetGiB: ML.effectiveBudget(g.freeGiB, p.reserveGiB), label: g.name };
+}
+const FIT_PILL = { fits: ['Fits', 'ok'], borderline: ['Borderline', 'warn'], incompatible: ['Too large', 'err'], unknown: ['Unknown', ''] };
+function fitHtml(est, hw) {
+  const f = ML.fitStatus(est.range, hw), [t, c] = FIT_PILL[f.status];
+  const range = est.range ? est.range[0] + '–' + est.range[1] + ' GiB' + (f.pct ? ' · ' + f.pct[0] + '–' + f.pct[1] + '% of ' + gib(hw.totalGiB) : '') : 'VRAM unknown';
+  const extra = f.headroom ? ' · leaves ' + f.headroom[0] + '–' + f.headroom[1] + ' GiB' : f.shortfall ? ' · short by ' + f.shortfall[0] + '–' + f.shortfall[1] + ' GiB' : '';
+  return { status: f.status, html: '<span class="pill ' + c + '" title="' + esc(f.reason) + '">' + t + '</span> <span class="hint">' + esc(range + extra + (est.range && est.confidence === 'rough' ? ' · rough estimate' : est.range ? ' · estimate' : '')) + '</span>' };
+}
+async function openLab() {
+  renderLab();
+  api.labHardware().then(h => { lab.hw = h; if (state.view === 'lab') renderLab(); }).catch(() => {}); // free VRAM changes as models load, so re-read on every visit
+  if (!lab.catalog && !lab.loading) labRefresh(false);
+  if (!lab.examples) { lab.examples = await api.labExamples(); if (state.view === 'lab') renderLab(); }
+}
+async function labRefresh(withHF) {
+  const seq = lab.seq = (lab.seq || 0) + 1; // only the newest refresh may write the catalog
+  lab.loading = true; renderLabCatalog();
+  try {
+    const r = await api.labCatalog(state.lab.filters.q, withHF);
+    if (seq !== lab.seq) return;
+    const keep = withHF ? [] : (lab.catalog || []).filter(v => v.source === 'huggingface' && !r.items.some(i => i.id === v.id));
+    lab.catalog = [...r.items, ...keep];
+    lab.sources = [...r.sources, ...(withHF ? [] : lab.sources.filter(s => s.id === 'huggingface'))];
+  } catch (e) { if (seq === lab.seq) toast(cleanErr(e), 'err'); } finally { if (seq === lab.seq) { lab.loading = false; if (state.view === 'lab') renderLab(); } }
+}
+function labInput(el, full) {
+  const keys = el.dataset.lab.split('.');
+  const v = el.type === 'checkbox' ? el.checked : el.dataset.type === 'number' ? Number(el.value) : el.value;
+  let o = state.lab;
+  for (const k of keys.slice(0, -1)) o = o[k];
+  o[keys[keys.length - 1]] = v;
+  if (el.dataset.lab === 'profile.preset' && LAB_PROFILES[v] && LAB_PROFILES[v][1] != null) state.lab.profile.reserveGiB = LAB_PROFILES[v][1];
+  saveLab();
+  if (full) renderLab(); else renderLabLive();
+}
+function renderLabLive() { renderLabBudget(); renderLabCatalog(); renderLabDesignOut(); }
+
+function renderLab() {
+  if (!$('#lab-body')) return;
+  const L = state.lab, p = L.profile, w = L.workload, hw = lab.hw;
+  const num = (k, label, attrs) => '<div class="field"><label>' + label + '</label><input class="input" type="number" data-lab="' + k + '" data-type="number" ' + (attrs || '') + ' value="' + esc(k.split('.').reduce((o, x) => o[x], L)) + '"></div>';
+  const local = !hw ? '<div class="hint"><span class="spinner"></span> Scanning this PC…</div>'
+    : (hw.gpus.length ? hw.gpus.map(g => '<div class="list-row"><div class="meta"><b>' + esc(g.name) + '</b><span>' + gib(g.totalGiB) + ' VRAM · ' + gib(g.freeGiB) + ' free now · driver ' + esc(g.driver) + '</span></div></div>').join('')
+      : '<div class="advice"><div class="warn">No NVIDIA GPU found (or nvidia-smi is unavailable). Models can still run on the CPU in Ollama, slowly. Using an AMD/Intel GPU or another machine? Choose "Another machine" and enter its memory.</div></div>') +
+      '<div class="hint">' + esc(hw.cpu) + ' · ' + hw.cores + ' threads · ' + gib(hw.ramGiB) + ' RAM' + (hw.diskFreeGiB != null ? ' · ' + gib(hw.diskFreeGiB) + ' disk free' : '') + ' · read ' + timeAgo(hw.at) + '</div>' +
+      '<button class="btn sm ghost" data-action="lab-rescan">' + ic('refresh') + 'Re-scan</button>';
+  const manual = '<div class="field"><label>Machine name</label><input class="input" data-lab="profile.manual.host" placeholder="e.g. Studio PC (RTX 4090)" value="' + esc(p.manual.host) + '"></div>' +
+    '<div class="lab-arch">' + num('profile.manual.totalGiB', 'GPU memory (GiB)', 'min="0" step="1"') + num('profile.manual.freeGiB', 'Free GPU memory', 'min="0" step="0.5"') + num('profile.manual.ramGiB', 'System RAM (GiB)', 'min="0"') + '</div>' +
+    '<div class="hint">To list and run that machine\'s models, point Ollama at it on the AI page → Ollama → Server URL (for example <code>http://192.168.1.20:11434/v1</code>), then press Installed below.</div>';
+  const teachers = Object.values(state.providers).filter(x => !x.local && x.id !== 'custom');
+  $('#lab-body').innerHTML =
+    '<div class="card"><h3>' + ic('monitor') + 'Your machine</h3>' +
+      '<div class="seg full">' + [['local', 'This PC'], ['manual', 'Another machine']].map(([k, l]) => '<button data-action="lab-source" data-v="' + k + '" class="' + (p.source === k ? 'active' : '') + '">' + l + '</button>').join('') + '</div>' +
+      (p.source === 'local' ? local : manual) +
+      '<div class="two"><div class="field"><label>While it runs</label><select class="input" data-lab="profile.preset">' + Object.entries(LAB_PROFILES).map(([k, [l]]) => '<option value="' + k + '"' + (p.preset === k ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></div>' +
+        num('profile.reserveGiB', 'Keep free for other apps (GiB)', 'min="0" step="0.5"') + '</div>' +
+      '<div class="two"><div class="field"><label>Context length</label><select class="input" data-lab="workload.context" data-type="number">' + [2048, 4096, 8192, 16384, 32768].map(n => '<option value="' + n + '"' + (w.context === n ? ' selected' : '') + '>' + n.toLocaleString() + ' tokens</option>').join('') + '</select></div>' +
+        num('workload.concurrency', 'Simultaneous requests', 'min="1" max="8"') + '</div>' +
+      '<div class="advice" id="lab-budget"></div></div>' +
+    '<div class="card"><h3>' + ic('bulb') + 'Learning</h3>' +
+      '<div class="switch-row"><div><div>Learn from results I accept</div><div class="hint">Each AI result you use in the editor is saved as a training example, prompt and answer. Examples stay on this PC.</div></div>' +
+        '<label class="switch"><input type="checkbox" data-lab="autoLearn"' + (L.autoLearn ? ' checked' : '') + '><span></span></label></div>' +
+      '<div class="field"><label>Premium teacher</label><div class="row gap"><select class="input" data-lab="teacher.provider" style="max-width:170px">' + teachers.map(t => '<option value="' + t.id + '"' + (L.teacher.provider === t.id ? ' selected' : '') + '>' + esc(t.label) + (t.ready ? '' : ' (no key)') + '</option>').join('') + '</select>' +
+        '<input class="input" data-lab="teacher.model" list="dl-' + esc(L.teacher.provider) + '" placeholder="' + esc(defModel(L.teacher.provider) || 'default model') + '" value="' + esc(L.teacher.model) + '" spellcheck="false"></div>' +
+        '<div class="hint">The teacher writes its best answer for each saved prompt, and your model trains on those answers (distillation). Calls use that provider\'s API credit.</div></div>' +
+      '<div class="row gap"><button class="btn sm primary" data-action="lab-distill">' + ic('sparkles') + 'Improve 10 with teacher</button><button class="btn sm ghost" data-action="lab-clear-examples">' + ic('trash') + 'Clear all</button></div>' +
+      '<div id="lab-examples"></div></div>' +
+    '<div class="card wide"><h3>' + ic('search') + 'Model catalog</h3>' +
+      '<div class="row gap"><input class="input" id="lab-q" data-lab="filters.q" placeholder="Search name, family, task, quant… e.g. qwen coder q4" value="' + esc(L.filters.q) + '" spellcheck="false">' +
+        '<button class="btn sm" data-action="lab-refresh">' + ic('refresh') + 'Installed</button><button class="btn sm" data-action="lab-hf">' + ic('globe') + 'Search Hugging Face</button></div>' +
+      '<div class="row gap"><label class="mini"><input type="checkbox" data-lab="filters.fitOnly"' + (L.filters.fitOnly ? ' checked' : '') + '> Fits my hardware</label>' +
+        '<label class="mini"><input type="checkbox" data-lab="filters.installedOnly"' + (L.filters.installedOnly ? ' checked' : '') + '> Installed</label><span class="hint" id="lab-sources"></span></div>' +
+      '<div id="lab-pull"></div><div id="lab-cat-list"></div></div>' +
+    '<div class="card wide"><h3>' + ic('wand') + 'Design your model</h3>' +
+      '<div class="seg full">' + [['scratch', 'Create from scratch'], ['lora', 'Fine-tune an existing model']].map(([k, l]) => '<button data-action="lab-route" data-v="' + k + '" class="' + (L.route === k ? 'active' : '') + '">' + l + '</button>').join('') + '</div>' +
+      (L.route === 'scratch'
+        ? '<div class="field"><label>Start from a preset</label><div class="seg wrap">' + Object.entries(ML.PRESETS).map(([k, x]) => '<button data-action="lab-preset" data-v="' + k + '">' + esc(x.label) + '</button>').join('') + '</div></div>' +
+          '<div class="lab-arch">' + [['vocab', 'Vocabulary'], ['layers', 'Layers'], ['hidden', 'Hidden width'], ['mlp', 'MLP width'], ['heads', 'Attention heads'], ['kvHeads', 'KV heads'], ['context', 'Context (tokens)']]
+            .map(([k, l]) => num('design.' + k, l, 'min="1" step="1"')).join('') +
+          '<div class="field"><label>Tokenizer</label><input class="input" data-lab="tokenizer" value="' + esc(L.tokenizer) + '" placeholder="new" spellcheck="false" title="new = train a fresh tokenizer on your examples, or a Hugging Face id to reuse one"></div></div>' +
+          '<label class="mini"><input type="checkbox" data-lab="design.tied"' + (L.design.tied ? ' checked' : '') + '> Tie input and output embeddings (fewer parameters)</label>'
+        : '<div class="field"><label>Base model (Hugging Face id)</label><input class="input" data-lab="base" value="' + esc(L.base) + '" spellcheck="false" placeholder="Qwen/Qwen2.5-1.5B-Instruct">' +
+            '<div class="hint">The original safetensors repo, not a -GGUF repo: GGUF files can be run but not trained.</div></div>' +
+          '<div class="two"><div class="field"><label>LoRA rank</label><select class="input" data-lab="loraRank" data-type="number">' + [8, 16, 32, 64].map(n => '<option' + (L.loraRank === n ? ' selected' : '') + '>' + n + '</option>').join('') + '</select></div><div></div></div>') +
+      '<div class="two">' + '<div class="field"><label>Model name</label><input class="input" data-lab="name" value="' + esc(L.name) + '" spellcheck="false"></div>' + num('epochs', 'Epochs', 'min="1" max="50"') + '</div>' +
+      '<div class="advice" id="lab-design-out"></div>' +
+      '<div class="row gap"><button class="btn primary" data-action="lab-export">' + ic('download') + 'Export training kit</button>' +
+        '<span class="hint">Trains on this PC (or copy the folder to your GPU machine), converts to GGUF, quantizes and registers it with Ollama as <code>scripty-' + esc(ML.safeName(L.name)) + '</code>.</span></div></div>';
+  renderLabLive(); renderLabExamples(); renderLabPull();
+}
+function renderLabBudget() {
+  const el = $('#lab-budget');
+  if (!el) return;
+  const hw = labHW(), p = state.lab.profile, w = state.lab.workload;
+  el.innerHTML = hw.totalGiB
+    ? '<div class="ok">Budget for models: <b>' + gib(hw.budgetGiB) + '</b> = ' + gib(hw.freeGiB) + ' free − ' + gib(Number(p.reserveGiB) || 0) + ' reserved, on ' + esc(hw.label) + ' (' + gib(hw.totalGiB) + ' total). Workload: ' + (Number(w.context) || 0).toLocaleString() + ' tokens × ' + (Number(w.concurrency) || 1) + '.</div>'
+    : '<div class="warn">' + esc(hw.label) + '. Fit checks show “Unknown” until GPU memory is known.</div>';
+}
+function renderLabCatalog() {
+  const el = $('#lab-cat-list');
+  if (!el) return;
+  const L = state.lab, hw = labHW();
+  if (lab.loading && !lab.catalog) { el.innerHTML = '<div class="hint"><span class="spinner"></span> Reading the catalog…</div>'; return; }
+  $('#lab-sources').textContent = (lab.loading ? 'Refreshing… ' : '') + lab.sources.map(s => s.label + ': ' + (s.ok ? s.count + (s.partial ? ' top results' : ' models') + ' · ' + timeAgo(s.at) : s.error)).join(' · ');
+  if (!lab.catalog) { el.innerHTML = '<div class="hint">Press Installed to list your Ollama models, or search Hugging Face.</div>'; return; }
+  const rows = ML.searchCatalog(lab.catalog, L.filters.q).map(v => ({ v, fit: fitHtml(ML.estimateVram(v, L.workload), hw) }))
+    .filter(x => (!L.filters.fitOnly || x.fit.status === 'fits') && (!L.filters.installedOnly || x.v.installed));
+  el.innerHTML = rows.length ? rows.slice(0, 150).map(({ v, fit }) => '<div class="list-row"><div class="meta"><b>' + esc(v.name) + (v.installed ? ' <span class="pill ok">Installed</span>' : '') + '</b>' +
+    '<span>' + esc([v.publisher, v.family, v.quant ? v.quant + (v.quantAssumed ? ' (typical)' : '') : '', v.params ? fmtParams(v.params) + ' params' : '', v.context ? v.context.toLocaleString() + ' ctx' : '',
+      v.task, v.downloads ? v.downloads.toLocaleString() + ' downloads' : ''].filter(Boolean).join(' · ')) + '</span><div class="lab-fit">' + fit.html + '</div></div>' +
+    (v.installed ? '<button class="btn sm primary" data-action="lab-use" data-name="' + esc(v.name) + '" data-fit="' + fit.status + '">' + ic('check') + 'Use</button>'
+      : '<button class="btn sm" data-action="lab-pull" data-name="' + esc('hf.co/' + v.name) + '">' + ic('download') + 'Install</button><button class="icon-btn" data-action="open-url" data-url="' + esc(v.url) + '" title="Model card">' + ic('external') + '</button>') + '</div>').join('')
+    : '<div class="hint">No models match.' + (L.filters.fitOnly ? ' <button class="btn sm ghost" data-action="lab-clear-fit">Show all matches</button>' : '') + '</div>';
+}
+function renderLabDesignOut() {
+  const el = $('#lab-design-out');
+  if (!el) return;
+  const L = state.lab, hw = labHW(), out = [];
+  const line = (label, f) => '<div class="' + (f.status === 'fits' ? 'ok' : f.status === 'unknown' ? '' : 'warn') + '">' + label + ': ' + f.html + '</div>';
+  if (L.route === 'scratch') {
+    const d = L.design, errs = ML.validateArch(d);
+    if (errs.length) errs.forEach(e => out.push('<div class="warn">' + esc(e) + '</div>'));
+    else {
+      const n = ML.paramCount(d), arch = ML.archOf(d);
+      out.push('<div class="ok"><b>' + n.toLocaleString() + '</b> parameters (' + fmtParams(n) + '), random initial weights, ' + (d.tied ? 'tied' : 'separate') + ' embeddings.</div>');
+      out.push(line('Training it (full, AdamW)', fitHtml(ML.trainMemory({ mode: 'scratch', params: n, arch, seq: d.context, microbatch: 2 }), hw)));
+      out.push(line('Running it (Q4_K_M)', fitHtml(ML.estimateVram({ params: n, quant: 'Q4_K_M', arch }, { context: d.context, concurrency: L.workload.concurrency }), hw)));
+      if (n > 3e8) out.push('<div class="warn">A from-scratch model this size needs billions of training tokens to write well. With a few hundred examples, fine-tuning an existing model works far better.</div>');
+    }
+  } else {
+    const params = ML.parseParams(L.base);
+    if (!/^[\w.-]+\/[\w.-]+$/.test(L.base || '')) out.push('<div class="warn">Enter a Hugging Face id like Qwen/Qwen2.5-1.5B-Instruct.</div>');
+    else if (!params) out.push('<div>The size isn\'t in the name, so memory can\'t be estimated. Check nvidia-smi during the first training steps.</div>');
+    else {
+      out.push(line('Training it (QLoRA, 4-bit)', fitHtml(ML.trainMemory({ mode: 'lora', params, seq: 1024 }), hw)));
+      out.push(line('Running it (Q4_K_M)', fitHtml(ML.estimateVram({ params, quant: 'Q4_K_M' }, L.workload), hw)));
+    }
+  }
+  const ex = lab.examples || [];
+  out.push('<div>Training data: ' + ex.length + ' examples' + (ex.length ? ', ' + ex.filter(e => e.teacher).length + ' improved by a teacher' : '') + '. ' + (ex.length < 50 ? 'Aim for 200+ before training.' : '') + '</div>');
+  el.innerHTML = out.join('');
+}
+function renderLabExamples() {
+  const el = $('#lab-examples');
+  if (!el) return;
+  const ex = lab.examples || [];
+  el.innerHTML = '<div class="hint">' + ex.length + ' examples · ' + ex.filter(e => e.teacher).length + ' improved by a teacher</div>' +
+    ex.slice(-25).reverse().map(e => '<div class="list-row"><div class="meta"><b>' + esc(e.label || 'Example') + '</b><span>' + esc(pname(e.provider) + (e.model ? ' · ' + e.model : '') + ' · ' + timeAgo(e.createdAt)) +
+      (e.teacher ? ' · <span style="color:var(--ok)">teacher: ' + esc(e.teacherModel) + '</span>' : '') + '</span></div>' +
+      '<button class="icon-btn" data-action="lab-rm-example" data-id="' + esc(e.id) + '" title="Remove">' + ic('trash') + '</button></div>').join('');
+}
+function renderLabPull() {
+  const el = $('#lab-pull');
+  if (!el) return;
+  const p = lab.pull;
+  el.innerHTML = p ? '<div class="list-row"><div class="meta"><b>Installing ' + esc(p.name) + '</b><span>' + esc(p.status || '') + (p.pct ? ' · ' + p.pct + '%' : '') + '</span><div class="lab-bar"><i style="width:' + (p.pct || 0) + '%"></i></div></div>' +
+    '<button class="btn sm ghost" data-action="lab-cancel-pull">' + ic('x') + 'Cancel</button></div>' : '';
+}
+const lanePrompts = new Map(); // laneId -> prompt; session-only so saved projects never grow
+function learn(r, lane) {
+  const p = lanePrompts.get(lane.id);
+  if (!p || !lane.text) return false;
+  api.labAddExample({ system: p.system, user: p.user, output: cleanOutput(lane.text), label: r.title, provider: lane.provider, model: lane.model })
+    .then(ex => { if (ex && lab.examples) lab.examples.push(ex); }).catch(() => {});
+  return true;
+}
+Object.assign(ACTIONS, {
+  'lab-rescan': async () => { lab.hw = null; renderLab(); lab.hw = await api.labHardware(); renderLab(); },
+  'lab-source': el => { state.lab.profile.source = el.dataset.v; saveLab(); renderLab(); },
+  'lab-route': el => { state.lab.route = el.dataset.v; saveLab(); renderLab(); },
+  'lab-preset': el => { state.lab.design = { ...ML.PRESETS[el.dataset.v] }; saveLab(); renderLab(); },
+  'lab-refresh': () => labRefresh(false),
+  'lab-hf': () => labRefresh(true),
+  'lab-clear-fit': () => { state.lab.filters.fitOnly = false; saveLab(); renderLab(); },
+  'lab-use': async el => {
+    const name = el.dataset.name;
+    state.providers.ollama = { ...state.providers.ollama, ...(await api.setProvider('ollama', { model: name, enabled: true })) };
+    state.settings.engine.mode = 'single'; state.settings.engine.single = { provider: 'ollama', model: name };
+    saveSettings(); renderBrief(); renderDatalists();
+    toast('Scripty now writes with ' + name + (el.dataset.fit === 'incompatible' ? ' — it may not fit your GPU, so expect slow CPU offload.' : '.'), el.dataset.fit === 'incompatible' ? 'err' : 'ok');
+  },
+  'lab-pull': async el => {
+    if (lab.pull) return toast('One download at a time.');
+    const name = el.dataset.name;
+    lab.pull = { name, status: 'starting', pct: 0 }; renderLabPull();
+    try { if (await api.labPull(name)) { toast(name + ' installed', 'ok'); await labRefresh(false); } }
+    catch (e) { toast(cleanErr(e), 'err'); } finally { lab.pull = null; renderLabPull(); }
+  },
+  'lab-cancel-pull': () => { if (lab.pull) api.labCancelPull(lab.pull.name); },
+  'lab-export': async el => {
+    const L = state.lab;
+    el.disabled = true;
+    try {
+      const r = await api.labExportKit({ route: L.route, design: L.design, base: L.base, loraRank: L.loraRank, tokenizer: String(L.tokenizer || '').trim() || 'new', name: L.name, epochs: L.epochs, context: L.workload.context });
+      toast('Training kit ready: ' + r.train + ' training + ' + r.eval + ' held-out examples (dataset ' + r.hash + '). Run run.ps1 in the folder.', 'ok', { label: 'Open folder', fn: () => api.reveal(r.dir) });
+    } finally { el.disabled = false; }
+  },
+  'lab-distill': async el => {
+    const t = state.lab.teacher, p = state.providers[t.provider];
+    if (!p || !p.ready) return toast('Pick a premium teacher that has an API key (AI page).', 'err', { label: 'Set up', fn: () => setView('providers') });
+    lab.examples = await api.labExamples();
+    const todo = lab.examples.filter(e => !e.teacher).slice(0, 10);
+    if (!todo.length) return toast(lab.examples.length ? 'Every example already has a teacher answer.' : 'No examples yet. Turn on learning or press Teach on an AI result.');
+    el.disabled = true;
+    let done = 0;
+    try {
+      for (const e of todo) {
+        el.innerHTML = '<span class="spinner"></span> Teacher ' + (done + 1) + ' / ' + todo.length;
+        const text = await callAI({ provider: t.provider, model: t.model || '' }, e.system, e.user, null, null, { temperature: 0.4 });
+        if (text.trim()) { await api.labPatchExample(e.id, { teacher: cleanOutput(text), teacherModel: pname(t.provider) + ' · ' + (t.model || defModel(t.provider)) }); done++; }
+      }
+      toast(done + ' examples improved by ' + pname(t.provider), 'ok');
+    } finally { lab.examples = await api.labExamples(); if (state.view === 'lab') renderLab(); }
+  },
+  'lab-rm-example': async el => { await api.labRemoveExample(el.dataset.id); lab.examples = lab.examples.filter(e => e.id !== el.dataset.id); renderLabExamples(); renderLabDesignOut(); },
+  'lab-clear-examples': async () => {
+    if (!(await confirmModal('Delete all ' + (lab.examples || []).length + ' training examples?', 'Delete'))) return;
+    await api.labRemoveExample('*'); lab.examples = []; renderLab();
+  },
+  'lane-teach': el => {
+    const r = state.project.runs.find(x => x.id === el.dataset.run), l = findLane(el);
+    if (r && l && learn(r, l)) toast('Saved as a training example', 'ok', { label: 'Model Lab', fn: () => setView('lab') });
+  },
+});
 
 // ================= remote link =================
 let lastRemoteJSON = '', remoteTick = 0;
@@ -1584,7 +1951,7 @@ function pushRemote() {
 /** Commands from linked devices. main.js only forwards allow-listed types with sanitized fields. */
 function handleRemote(c) {
   const studio = () => { if (state.view !== 'studio') setView('studio'); };
-  const quiet = ['play-sound', 'play-cue', 'stop-sounds', 'prompter-speed', 'prompter-scroll'];
+  const quiet = ['play-sound', 'play-cue', 'stop-sounds', 'next-sound', 'replay-sound', 'prompter-speed', 'prompter-scroll'];
   switch (c.type) {
     case 'generate': studio(); if (!state.genRun) generate(); break;
     case 'stop-generate': if (state.genRun) cancelRun(state.genRun); else for (const r of state.project.runs) if (state.liveRuns.has(r.id)) cancelRun(r); break;
@@ -1606,6 +1973,8 @@ function handleRemote(c) {
     case 'editor-mode': studio(); setEditorMode(c.mode === 'perform' ? 'perform' : 'edit'); break;
     case 'insert-cue': if (c.label) { studio(); insertSnippet('[SFX: ' + c.label.replace(/[[\]\r\n]/g, '').slice(0, 80) + ']'); } break;
     case 'snapshot': ACTIONS.snapshot(); break;
+    case 'next-sound': deckNext(); break;
+    case 'replay-sound': deckReplay(); break;
     default: return;
   }
   if (!quiet.includes(c.type)) toast('Remote: ' + c.type.replace(/-/g, ' '));
@@ -1628,6 +1997,8 @@ async function init() {
   state.settings = withDefaults(cfg.settings);
   state.providers = cfg.providers;
   state.info = await api.info();
+  state.lab = withLabDefaults(await api.labGet());
+  api.onLab(d => { if (lab.pull && d.name === lab.pull.name) { lab.pull.status = d.status; if (d.total) lab.pull.pct = Math.round(100 * (d.completed || 0) / d.total); renderLabPull(); } });
   state.sfxLib = await api.sfxList();
   let p = null;
   if (state.settings.lastProjectId) p = await api.loadProject(state.settings.lastProjectId).catch(() => null);
@@ -1639,6 +2010,8 @@ async function init() {
   bindEvents();
   renderAll();
   await saveNow();
+  api.onHotkey(runHotkey);
+  applyHotkeys().catch(() => {});
   api.onRemoteCommand(cmd => { try { handleRemote(cmd); } catch (e) { toast(cleanErr(e), 'err'); } });
   await refreshRemoteProjects();
   await refreshRemoteStatus();
@@ -1662,9 +2035,27 @@ window.__scripty = {
     ok(state.readSeq.some(x => x.type === 'speech') && state.readSeq.some(x => x.type === 'pause'), 'read sequence has speech and pauses');
     setEditorMode('edit');
     for (const t of ['assist', 'length', 'cues', 'history', 'runs']) setTool(t);
-    for (const v of ['projects', 'sounds', 'providers', 'settings', 'studio']) await setView(v);
+    for (const v of ['projects', 'sounds', 'providers', 'settings', 'lab', 'studio']) await setView(v);
     ok($$('#provider-grid .pv').length === Object.keys(state.providers).length, 'provider cards');
+    await setView('lab');
+    ok($('#lab-design-out').textContent.includes(ML.paramCount(ML.PRESETS.proof).toLocaleString()), 'model lab shows the scratch parameter count');
+    state.lab.profile = { ...state.lab.profile, source: 'manual', reserveGiB: 3, manual: { host: 'Test rig', totalGiB: 24, freeGiB: 18, ramGiB: 64 } };
+    renderLab();
+    ok(/15 GiB/.test($('#lab-budget').textContent), 'manual profile budget = free − reserve');
+    lab.catalog = [ML.variantFromHF({ id: 'test/Tiny-1B-GGUF', gguf: { total: 1e9 } }), ML.variantFromHF({ id: 'test/Huge-70B-GGUF', gguf: { total: 70e9 } })];
+    renderLabCatalog();
+    ok($$('#lab-cat-list .list-row').length === 2 && $('#lab-cat-list').textContent.includes('Too large'), 'catalog keeps incompatible models visible with a reason');
+    state.lab.filters.fitOnly = true; renderLabCatalog();
+    ok($$('#lab-cat-list .list-row').length === 1, 'fit filter hides the model that does not fit');
+    state.lab = withLabDefaults({}); lab.catalog = null;
+    await setView('studio');
     ok($$('#board-grid .snd').length === K.BUILTIN_SOUNDS.length, 'sound board');
+    const rec = K.parseSoundRecipe('{"name":"Zap","layers":[{"type":"tone","freq":800,"freqTo":200,"dur":0.2}]}');
+    Sound.setVolume(0); Sound.play({ id: 'selftest-ai', recipe: rec }); const v1 = Sound.lastVariation('pop'); Sound.play('pop'); const v2 = Sound.lastVariation('pop'); Sound.play('pop');
+    ok(Sound.lastVariation('selftest-ai') && v2 && Sound.lastVariation('pop').semis !== v2.semis && (!v1 || v1.semis !== v2.semis), 'every play is a new variation (AI recipe and built-in)');
+    deck.i = 0; deck.last = -1; deckNext(); ok(deck.i === 1 && deck.last === 0, 'next-cue hotkey advances the deck');
+    deck.rec = []; deck.t0 = performance.now(); deckNext(); ok(deck.rec.length === 1 && deck.rec[0].label === deckCues()[1].label, 'record timing captures presses');
+    deck.rec = null; deck.i = 0; deck.last = -1; Sound.stopAll(); Sound.setVolume(state.settings.sfxVolume);
     ok(toSRT().includes('-->') && exportHTML().includes('<h1>'), 'exports build');
     // model picker: lists every model (not just matches for the current value) and saves the pick
     state.settings.engine.mode = 'single'; state.settings.engine.single = { provider: 'anthropic', model: 'claude-sonnet-5-5' }; renderBrief();
@@ -1689,6 +2080,7 @@ window.__scripty = {
       r.final = r.activeLane = r.lanes[3].id;
       state.project.runs.unshift(r); setTool('runs'); return;
     }
+    if (v === 'lab-design') { await setView('lab'); $('#lab-design-out').scrollIntoView({ block: 'center' }); return; }
     if (v === 'light') { state.settings.theme = 'light'; applySettings(); await setView('studio'); setEditorMode('edit'); setTool('length'); return; }
     if (v === 'studio') { await setView('studio'); setEditorMode('edit'); setTool('assist'); return; }
     if (v === 'models') {
