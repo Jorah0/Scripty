@@ -7,6 +7,10 @@
   "author": "Scripty",
   "license": "MIT",
   "scripts": {
+    "prestart": "node build/ensure-deps.js",
+    "presmoke": "node build/ensure-deps.js",
+    "preverify": "node build/ensure-deps.js",
+    "predist": "node build/ensure-deps.js",
     "start": "set ELECTRON_RUN_AS_NODE=&& electron .",
     "test": "node --test test/*.test.js",
     "smoke": "set ELECTRON_RUN_AS_NODE=&& electron . --smoke",
