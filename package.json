@@ -13,6 +13,8 @@
     "verify": "node --test test/*.test.js && set ELECTRON_RUN_AS_NODE=&& electron . --smoke",
     "icon": "python build/make_icon.py",
     "android": "powershell -ExecutionPolicy Bypass -File android/build-apk.ps1",
+    "emulator": "powershell -ExecutionPolicy Bypass -File android/emulator.ps1",
+    "test:android": "node test/android.e2e.js",
     "dist": "electron-builder --win nsis portable"
   },
   "devDependencies": {

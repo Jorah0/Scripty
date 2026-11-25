@@ -54,6 +54,8 @@ VISUAL: B-roll of the city at night     ← visual note (not counted as spoken)
 - **Install:** on the PC open **Remote**, switch it on, and scan the **Android app** QR code with the phone. You can also copy `dist\Scripty-Remote-1.1.0.apk` to the phone. Allow "install unknown apps" when Android asks.
 - **Link:** open Scripty Remote and type the PC address, or scan the pairing QR with the camera and choose *Open with Scripty Remote*.
 - **Update over the link:** when a newer app is bundled with Scripty, the device shows **Update app** on the Remote page. That pushes the update to that phone only. The phone downloads it from the PC, checks its SHA-256, package name and signature, installs it and reopens itself. The first update asks for one confirmation tap. On Android 12+ later updates need no tap. If Android blocks the automatic reopen, a "tap to open" notification appears.
+- **Try it without a phone:** `npm run emulator` boots an Android 14 phone emulator (installed once, about 1.5 GB), installs the APK and opens it. In the emulator this PC is `10.0.2.2`, so link it with `10.0.2.2:47830` and the 6-digit code.
+- **Test it:** `npm run test:android` runs the real APK in a headless emulator against a real Remote Link server: QR deep link, app version, live state, tapping a control, the app bridge, Back to the connect screen, relaunch, unlink, and re-linking by code. Add `-- --show` to watch.
 - **Build:** `npm run android` (output `android\dist\`), then `npm run dist` to bundle it. The signing key lives in `android\keystore\`, which is git-ignored. **Back it up.** Every future update must be signed with the same key.
 
 ## Develop
