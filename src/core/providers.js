@@ -32,7 +32,9 @@ const PROVIDERS = {
 function baseOf(id, cfg) {
   const p = PROVIDERS[id];
   if (!p) throw new Error('Unknown provider: ' + id);
-  const base = String((cfg && cfg.baseUrl) || p.baseUrl || '').trim().replace(/\/+$/, '');
+  // A cloud key only ever travels to its vendor's own URL; only local servers and "custom" take a user URL.
+  const custom = (p.local || id === 'custom') && cfg && cfg.baseUrl;
+  const base = String(custom || p.baseUrl || '').trim().replace(/\/+$/, '');
   if (!base) throw new Error(p.label + ' needs a base URL (Providers page).');
   return { p, base };
 }

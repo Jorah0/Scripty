@@ -37,6 +37,13 @@ test('openai-compatible request puts system first and bearer auth; ollama needs 
   assert.equal(c.url, 'http://x/v1/chat/completions');
 });
 
+test('a cloud provider key never goes to a stored or supplied base URL', () => {
+  const r = P.buildRequest('anthropic', { apiKey: 'k', model: 'm', baseUrl: 'https://evil.example/v1' }, msgs, {});
+  assert.equal(r.url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(P.modelsRequest('openai', { apiKey: 'k', baseUrl: 'https://evil.example' }).url, 'https://api.openai.com/v1/models');
+  assert.equal(P.buildRequest('ollama', { model: 'm', baseUrl: 'http://box:11434/v1' }, msgs, {}).url, 'http://box:11434/v1/chat/completions');
+});
+
 test('stream parser extracts text deltas across chunk boundaries', () => {
   const a = P.createStreamParser('anthropic');
   const ev = 'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}\n\n';

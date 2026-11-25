@@ -18,7 +18,7 @@
     "dist": "electron-builder --win nsis portable"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
+    "electron": "^45.5.0",
     "electron-builder": "^26.18.0"
   },
   "build": {
@@ -37,7 +37,14 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": "android/dist", "to": "android", "filter": ["Scripty-Remote.apk", "version.json"] }
+      {
+        "from": "android/dist",
+        "to": "android",
+        "filter": [
+          "Scripty-Remote.apk",
+          "version.json"
+        ]
+      }
     ],
     "win": {
       "icon": "build/icon.ico",

@@ -90,7 +90,7 @@ function friendlyError(id, err, status, bodyText) {
   if (status === 404) return p.label + ': not found (404). The model name may be wrong — use "Load models". ' + msg;
   if (status === 429) return p.label + ': rate limited or out of credit (429). ' + msg;
   const code = err && err.cause && err.cause.code;
-  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND') return p.label + ': cannot reach ' + (providerCfg(id).baseUrl || p.baseUrl) + (p.local ? ' — is it running?' : ' — check your connection.');
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND') return p.label + ': cannot reach ' + ((urlOverridable(id) && providerCfg(id).baseUrl) || p.baseUrl) + (p.local ? ' — is it running?' : ' — check your connection.');
   return p.label + (status ? ' (' + status + ')' : '') + ': ' + String(msg).slice(0, 400);
 }
 
@@ -308,7 +308,7 @@ function createWindow() {
 
 function runSmoke() {
   const errors = [];
-  win.webContents.on('console-message', (e, level, message, line, src) => { if (level >= 3) errors.push(message + ' @' + src + ':' + line); });
+  win.webContents.on('console-message', (e) => { if (e.level === 'error') errors.push(e.message + ' @' + e.sourceId + ':' + e.lineNumber); });
   win.webContents.on('preload-error', (e, p, err) => errors.push('preload: ' + err));
   win.webContents.on('render-process-gone', (e, d) => errors.push('renderer gone: ' + d.reason));
   win.setAlwaysOnTop(true); // covered windows stop painting, which would make screenshots show stale frames
@@ -344,7 +344,7 @@ async function smokeRemote(errors) {
     const st = remote.status(), base = 'http://127.0.0.1:' + st.port + '/';
     await win.webContents.executeJavaScript('refreshRemoteStatus()');
     phone = new BrowserWindow({ width: 390, height: 844, x: 40, y: 40, title: 'Scripty Remote (smoke)', alwaysOnTop: true, webPreferences: { sandbox: true } });
-    phone.webContents.on('console-message', (e, level, message) => { if (level >= 3) errors.push('phone: ' + message); });
+    phone.webContents.on('console-message', (e) => { if (e.level === 'error') errors.push('phone: ' + e.message); });
     await phone.loadURL(base + '?pair=' + encodeURIComponent(st.pairToken));
     await wait(1500);
     const linked = await phone.webContents.executeJavaScript('!!localStorage.getItem("scripty.token") && !document.getElementById("app").classList.contains("hidden")');
