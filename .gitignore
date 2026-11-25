@@ -12,3 +12,12 @@ android/keystore/
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# Secrets anywhere in the tree (API keys from env files, signing keys, certs)
+.env
+.env.*
+*.jks
+*.keystore
+*.pem
+*.p12
+*.key
